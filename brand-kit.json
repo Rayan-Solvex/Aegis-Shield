@@ -1,0 +1,146 @@
+{
+  "brandKit": {
+    "id": "f20f7a17-24bb-4afb-9947-9048424e5133",
+    "name": "Brand Kit - 5/9/2026",
+    "colors": [
+      {
+        "id": "698e141f-b7bd-423a-a8df-f1646d4c7819",
+        "hex": "#000010",
+        "rgb": {
+          "b": 16,
+          "g": 0,
+          "r": 0
+        },
+        "hsl": {
+          "h": 240,
+          "l": 3,
+          "s": 100
+        },
+        "name": "Blue",
+        "role": "extracted",
+        "prominence": 1,
+        "pixelPercentage": 100
+      }
+    ],
+    "assets": [
+      {
+        "id": "5a724bf5-b420-4beb-a4cc-7d2a543ed33e",
+        "fileName": "logo.jpg",
+        "assetType": "logo",
+        "mimeType": "image/jpeg",
+        "metadata": {
+          "kind": "logo",
+          "aspectRatio": "square",
+          "variants": [
+            {
+              "width": 1254,
+              "height": 1254,
+              "purpose": "original",
+              "fileName": "logo-original.png",
+              "mimeType": "image/png",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/logo-original.png",
+              "fileSizeBytes": 137476
+            },
+            {
+              "width": 16,
+              "height": 16,
+              "purpose": "favicon",
+              "fileName": "favicon-16.png",
+              "mimeType": "image/png",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/favicon-16.png",
+              "fileSizeBytes": 526
+            },
+            {
+              "width": 32,
+              "height": 32,
+              "purpose": "favicon",
+              "fileName": "favicon-32.png",
+              "mimeType": "image/png",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/favicon-32.png",
+              "fileSizeBytes": 1367
+            },
+            {
+              "width": 64,
+              "height": 64,
+              "purpose": "favicon",
+              "fileName": "favicon-64.png",
+              "mimeType": "image/png",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/favicon-64.png",
+              "fileSizeBytes": 3851
+            },
+            {
+              "width": 128,
+              "height": 128,
+              "purpose": "favicon",
+              "fileName": "favicon-128.png",
+              "mimeType": "image/png",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/favicon-128.png",
+              "fileSizeBytes": 12228
+            },
+            {
+              "width": 256,
+              "height": 256,
+              "purpose": "favicon",
+              "fileName": "favicon-256.png",
+              "mimeType": "image/png",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/favicon-256.png",
+              "fileSizeBytes": 36183
+            },
+            {
+              "width": 32,
+              "height": 32,
+              "purpose": "favicon",
+              "fileName": "favicon.ico",
+              "mimeType": "image/x-icon",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/favicon.ico",
+              "fileSizeBytes": 1367
+            }
+          ],
+          "aiAnalysis": {
+            "hasText": true,
+            "description": "A modern cybersecurity-themed logo featuring a shield shape with a gradient from cyan/teal on the left to purple on the right. Inside the shield is a stylized letter 'A' with circuit board elements and vertical data bar indicators at the bottom center. Horizontal circuit trace lines extend from both sides of the shield. The background is deep navy/dark blue. Below the shield, the text 'AEGIS SHIELD' appears in bold white uppercase sans-serif lettering with a small cyan triangle accent under the 'A'. The overall style is tech-forward, futuristic, and professional.",
+            "textContent": "AEGIS SHIELD",
+            "dominantColors": [
+              "#00C8FF",
+              "#7B3FE4",
+              "#0A0F2C"
+            ],
+            "recommendations": {
+              "bestFor": [
+                "favicon",
+                "navbar",
+                "hero"
+              ],
+              "usageNotes": "This logo is optimized for dark backgrounds. Use on dark or navy-colored navbars and headers. Avoid placing on white or light backgrounds as the dark navy background will clash. If transparency is confirmed, the shield and text elements will render well on any dark surface. For favicon use, crop or export just the shield icon portion at 32x32 or 64x64px. Maintain aspect ratio when scaling. The cyan-to-purple gradient should be preserved in all use cases — avoid grayscale rendering. Recommended minimum display size is 120px wide to preserve circuit detail legibility.",
+              "themeVariant": "dark",
+              "notSuitableFor": [
+                "background",
+                "light-theme-navbar"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": "226f71c3-16f9-4241-b14f-bc07a2e66355",
+        "fileName": "readme.md",
+        "assetType": "document",
+        "mimeType": "text/markdown",
+        "metadata": {
+          "kind": "document",
+          "variants": [
+            {
+              "width": 0,
+              "height": 0,
+              "purpose": "original",
+              "fileName": "readme.md",
+              "mimeType": "text/markdown",
+              "storageKey": "brand-kits/6df90dda-e440-4fc3-9a33-aa8d37ae9e72/f20f7a17-24bb-4afb-9947-9048424e5133/readme.md",
+              "fileSizeBytes": 4885
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

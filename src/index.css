@@ -1,0 +1,182 @@
+@import '@solana/wallet-adapter-react-ui/styles.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #000010;
+  color: #e2e8f0;
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+@layer components {
+  .form-label {
+    @apply block text-xs font-medium text-aegis-subtext;
+  }
+
+  .input {
+    @apply rounded-xl border border-aegis-border bg-aegis-bg px-4 py-3 text-sm text-aegis-text shadow-sm outline-none transition-colors;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  .input::placeholder {
+    @apply text-aegis-muted;
+  }
+
+  .input:hover {
+    border-color: rgba(0, 212, 255, 0.2);
+  }
+
+  .input:focus {
+    border-color: rgba(0, 212, 255, 0.35);
+    box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.18);
+  }
+}
+
+/* Wallet adapter overrides */
+.wallet-adapter-button {
+  background: linear-gradient(135deg, rgba(0,212,255,0.15), rgba(139,92,246,0.15)) !important;
+  border: 1px solid rgba(0,212,255,0.3) !important;
+  border-radius: 8px !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  height: 40px !important;
+  padding: 0 16px !important;
+  transition: all 0.2s ease !important;
+}
+
+.wallet-adapter-button:hover {
+  background: linear-gradient(135deg, rgba(0,212,255,0.25), rgba(139,92,246,0.25)) !important;
+  border-color: rgba(0,212,255,0.6) !important;
+  box-shadow: 0 0 15px rgba(0,212,255,0.2) !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background: #05051a !important;
+  border: 1px solid rgba(0,212,255,0.2) !important;
+  border-radius: 16px !important;
+}
+
+.wallet-adapter-modal-title {
+  color: #e2e8f0 !important;
+}
+
+.wallet-adapter-modal-list li {
+  border-radius: 8px !important;
+}
+
+.wallet-adapter-modal-list li button {
+  background: rgba(10,10,46,0.6) !important;
+  border: 1px solid rgba(26,26,78,0.6) !important;
+  border-radius: 8px !important;
+}
+
+.wallet-adapter-modal-list li button:hover {
+  border-color: rgba(0,212,255,0.4) !important;
+  background: rgba(0,212,255,0.05) !important;
+}
+
+.wallet-adapter-dropdown { z-index: 100; }
+.wallet-adapter-modal-wrapper { z-index: 100; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #05051a; }
+::-webkit-scrollbar-thumb { background: #1a1a4e; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,212,255,0.3); }
+
+/* Grid circuit background */
+.circuit-bg {
+  background-image:
+    linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Glow effects */
+.glow-cyan { box-shadow: 0 0 20px rgba(0,212,255,0.25), 0 0 60px rgba(0,212,255,0.1); }
+.glow-purple { box-shadow: 0 0 20px rgba(139,92,246,0.25), 0 0 60px rgba(139,92,246,0.1); }
+.text-glow-cyan { text-shadow: 0 0 10px rgba(0,212,255,0.5); }
+
+/* Gradient border */
+.gradient-border {
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  position: relative;
+}
+.gradient-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(0,212,255,0.4), rgba(139,92,246,0.4));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* Status indicators */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+.status-dot.green { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.5); }
+.status-dot.amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,0.5); }
+.status-dot.red { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.5); }
+
+/* Toast animations */
+@keyframes slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slide-out {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(100%); opacity: 0; }
+}
+.toast-enter { animation: slide-in 0.3s ease forwards; }
+.toast-exit { animation: slide-out 0.3s ease forwards; }
+
+/* ZK proof animation */
+@keyframes zk-scan {
+  0% { top: 0; }
+  100% { top: 100%; }
+}
+.zk-scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0,212,255,0.8), transparent);
+  animation: zk-scan 2s linear infinite;
+}
+
+/* Print styles for audit trail */
+@media print {
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  body { background: white !important; color: black !important; }
+  .audit-card { border: 1px solid #ccc !important; break-inside: avoid; }
+}
+
+/* Monospace number display */
+.num-display {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}

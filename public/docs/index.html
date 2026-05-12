@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aegis Shield Docs</title>
+    <style>
+      :root {
+        --bg: #05051a;
+        --surface: #0d1028;
+        --panel: rgba(15, 20, 44, 0.92);
+        --border: rgba(98, 117, 160, 0.28);
+        --text: #f1f5ff;
+        --muted: #96a3c7;
+        --cyan: #3dd9ff;
+        --teal: #4be1c3;
+        --amber: #ffbf5f;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(61, 217, 255, 0.14), transparent 32%),
+          radial-gradient(circle at bottom right, rgba(75, 225, 195, 0.10), transparent 28%),
+          var(--bg);
+        color: var(--text);
+      }
+
+      a { color: inherit; }
+
+      .shell {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 56px 24px 80px;
+      }
+
+      .hero {
+        padding: 32px;
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        background: linear-gradient(180deg, rgba(14, 18, 42, 0.96), rgba(10, 13, 31, 0.96));
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        border: 1px solid rgba(61, 217, 255, 0.25);
+        border-radius: 999px;
+        color: var(--cyan);
+        background: rgba(61, 217, 255, 0.08);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(2.5rem, 6vw, 4.5rem);
+        line-height: 1.02;
+      }
+
+      .lede {
+        max-width: 760px;
+        color: var(--muted);
+        font-size: 1.05rem;
+        line-height: 1.7;
+      }
+
+      .nav {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+        margin-top: 28px;
+      }
+
+      .nav a {
+        text-decoration: none;
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+      }
+
+      .nav strong {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--text);
+      }
+
+      .nav span {
+        color: var(--muted);
+        font-size: 0.94rem;
+        line-height: 1.5;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 18px;
+        margin-top: 26px;
+      }
+
+      .card {
+        padding: 22px;
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        background: var(--panel);
+      }
+
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 1.15rem;
+      }
+
+      .card p, .card li {
+        color: var(--muted);
+        line-height: 1.65;
+      }
+
+      .card ul {
+        margin: 12px 0 0;
+        padding-left: 18px;
+      }
+
+      .section {
+        margin-top: 40px;
+      }
+
+      .section h2 {
+        margin-bottom: 10px;
+        font-size: 1.4rem;
+      }
+
+      .section p {
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      .footnote {
+        margin-top: 34px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 191, 95, 0.22);
+        background: rgba(255, 191, 95, 0.08);
+        color: var(--muted);
+      }
+
+      .footnote strong { color: var(--amber); }
+      .accent { color: var(--teal); }
+      .mono { font-family: "IBM Plex Mono", monospace; }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="badge">Aegis Shield Documentation</div>
+        <h1>Aegis Shield: Economic Privacy Protocol</h1>
+        <p class="lede">
+          Aegis Shield combines Umbra-compatible privacy primitives with application-layer
+          mechanism design. The goal is not just private transfers, but economically secure
+          private transfers where honest auditing is profitable and privacy violations are costly.
+        </p>
+
+        <nav class="nav">
+          <a href="#introduction">
+            <strong>Introduction</strong>
+            <span>Why Aegis exists and how it extends cryptographic privacy with incentive design.</span>
+          </a>
+          <a href="#identity-and-incentives">
+            <strong>Identity And Incentives</strong>
+            <span>How Sender, Receiver, and Auditor capabilities are separated at the application layer.</span>
+          </a>
+          <a href="#compliance-stake">
+            <strong>Compliance Stake</strong>
+            <span>Why auditors need bonded capital and what future slashing policies can prove.</span>
+          </a>
+        </nav>
+      </section>
+
+      <section class="grid section" id="introduction">
+        <article class="card">
+          <h2>Protocol Thesis</h2>
+          <p>
+            Umbra provides privacy primitives. Aegis provides the governance and incentive layer.
+            The combined system aims to make selective disclosure safe enough for regulated use
+            without turning privacy into a trust exercise.
+          </p>
+        </article>
+        <article class="card" id="identity-and-incentives">
+          <h2>Identity Model</h2>
+          <p>
+            Roles are determined by cryptographic capability, not by username. A sender should only
+            have sender powers. A receiver should control claim and disclosure powers. An auditor
+            should only gain access through a user-issued grant and a staked registry identity.
+          </p>
+        </article>
+        <article class="card" id="compliance-stake">
+          <h2>Economic Security</h2>
+          <p>
+            The compliance stake model is the admission bond for auditors. It is the key design move
+            that turns privacy from a UI promise into a system of aligned incentives.
+          </p>
+        </article>
+      </section>
+
+      <section class="section">
+        <h2>GitBook-ready source</h2>
+        <p>
+          The repository now includes a GitBook-ready documentation source under
+          <span class="mono"> docs/</span> with a summary file and page structure prepared for import.
+          That source documents the identity model, auditability rules, and contract-backed role boundaries in the current build.
+        </p>
+      </section>
+
+      <section class="section">
+        <h2>Prepared chapters</h2>
+        <div class="grid">
+          <article class="card">
+            <h2>Introduction</h2>
+            <ul>
+              <li>Why Aegis exists</li>
+              <li>Umbra layer vs Aegis layer</li>
+              <li>Economic privacy as the design goal</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h2>Identity And Roles</h2>
+            <ul>
+              <li>Sender capability boundaries</li>
+              <li>Receiver disclosure authority</li>
+              <li>Auditor access under grants and stake</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h2>Compliance Stake</h2>
+            <ul>
+              <li>Admission bond for auditors</li>
+              <li>Provable slashable offenses</li>
+              <li>Reputation and revocation signals</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <div class="footnote">
+        <strong>GitBook live:</strong> the published documentation is now available at
+        <a href="https://aegis-shield.gitbook.io/aegis-shield-docs/">aegis-shield.gitbook.io/aegis-shield-docs</a>.
+        This local page remains as a bundled fallback and preview surface inside the app.
+      </div>
+    </main>
+  </body>
+</html>

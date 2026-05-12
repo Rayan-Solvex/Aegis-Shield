@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vscode/
+target/
+.anchor/
+test-ledger/
+.env.local
+.env.*.local

@@ -1,0 +1,52 @@
+diff --git a/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js b/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js
+index 0e1e01e..96bfd90 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js
++++ b/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js
+@@ -1061,7 +1061,46 @@ var NETWORK_CONFIGS = {
+       }
+     }
+   },
+-  devnet: null,
++  devnet: {
++    programId: "DSuKkyqGVGgo4QtPABfxKJKygUDACbUhirnuv63mEpAJ",
++    mxeAccountAddress: "9AutF4oqBAoV1AGXvtco4BJ9JUrA3q3gLMu5iSvWw1Pk",
++    mxePubkey: new Uint8Array([
++      161,
++      116,
++      69,
++      123,
++      62,
++      237,
++      162,
++      81,
++      127,
++      36,
++      186,
++      200,
++      0,
++      227,
++      161,
++      189,
++      79,
++      30,
++      34,
++      244,
++      226,
++      255,
++      252,
++      228,
++      104,
++      141,
++      240,
++      85,
++      83,
++      199,
++      173,
++      7
++    ]),
++    arciumProgramAddress: "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ",
++    addressLookupTables: {}
++  },
+   localnet: null
+ };
+ function getNetworkConfig(network) {
