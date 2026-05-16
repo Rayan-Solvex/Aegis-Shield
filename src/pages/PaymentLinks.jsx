@@ -1,20 +1,30 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import {
   Connection,
   PublicKey,
   LAMPORTS_PER_SOL,
+  SystemProgram,
   Transaction,
   TransactionInstruction,
+  VersionedMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
 import { SolanaSignMessage, SolanaSignTransaction } from '@solana/wallet-standard-features';
 import nacl from 'tweetnacl';
 import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createTransferInstruction,
+  getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
+import {
   Link2,
   Copy,
   CheckCheck,
+  Download,
   ExternalLink,
   Lock,
   Send,
@@ -28,6 +38,7 @@ import {
 import { Card, CardHeader, CardBody, CardFooter } from '../components/UI/Card.jsx';
 import { Button } from '../components/UI/Button.jsx';
 import { FeeBreakdown } from '../components/UI/FeeBreakdown.jsx';
+import { TokenSelector } from '../components/UI/TokenSelector.jsx';
 import { ZKLoader } from '../components/UI/ZKLoader.jsx';
 import { useSolanaBalance } from '../hooks/useSolanaBalance.js';
 import { useToast } from '../context/ToastContext.jsx';
@@ -38,6 +49,7 @@ import {
   formatAmount,
 } from '../lib/umbra.js';
 import {
+  AEGIS_TREASURY_ADDRESS,
   NETWORK,
   TOKEN_MINTS,
   UMBRA_CONFIG,
@@ -49,11 +61,13 @@ import {
 
 const TABS = [
   { id: 'my-link', label: 'My Payment Link', icon: Link2 },
+  { id: 'claim', label: 'Claim Payments', icon: Eye },
   { id: 'send', label: 'Send to Link', icon: Send },
 ];
 
 const PAYMENT_LINK_PROFILE_PREFIX = 'aegis-payment-link-profile-v3:';
 const PAYMENT_LINK_SIGNING_DOMAIN = 'AEGIS_SHIELD_UMBRA_NATIVE_LINK_V1';
+const paymentLinkProfileMemoryCache = new Map();
 
 function getWalletStandardChain() {
   return NETWORK === 'mainnet-beta' ? 'solana:mainnet' : 'solana:devnet';
@@ -63,16 +77,20 @@ function getUmbraClientNetwork() {
   return NETWORK === 'mainnet-beta' ? 'mainnet' : 'devnet';
 }
 
+function isSolLikeToken(token) {
+  return token === 'SOL' || token === 'WSOL';
+}
+
+function getTokenDisplayDecimals(token) {
+  return isSolLikeToken(token) ? 6 : 4;
+}
+
 function getDirectUmbraRpcEndpoint() {
-  return NETWORK === 'mainnet-beta'
-    ? 'https://api.mainnet-beta.solana.com'
-    : 'https://api.devnet.solana.com';
+  return getRpcEndpoint();
 }
 
 function getDirectUmbraWsEndpoint() {
-  return NETWORK === 'mainnet-beta'
-    ? 'wss://api.mainnet-beta.solana.com'
-    : 'wss://api.devnet.solana.com';
+  return getWsEndpoint();
 }
 
 function getPaymentLinkBase() {
@@ -85,6 +103,23 @@ function getPaymentLinkBase() {
 
 function getPaymentLinkStorageKey(ownerAddress) {
   return `${PAYMENT_LINK_PROFILE_PREFIX}${ownerAddress}`;
+}
+
+function purgePersistedPaymentLinkProfilesFromStorage() {
+  if (typeof window === 'undefined') return;
+
+  [window.localStorage, window.sessionStorage].forEach((storage) => {
+    const keysToRemove = [];
+
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(PAYMENT_LINK_PROFILE_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+
+    keysToRemove.forEach((key) => storage.removeItem(key));
+  });
 }
 
 function encodeBase64Url(bytes) {
@@ -101,6 +136,15 @@ function decodeBase64Url(value) {
     .replace(/_/g, '/')
     .padEnd(Math.ceil(value.length / 4) * 4, '=');
   const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function decodeBase64(value) {
+  const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
     bytes[i] = binary.charCodeAt(i);
@@ -143,6 +187,280 @@ function deserializeAccountSnapshot(snapshot, address) {
   };
 }
 
+function toAddressKey(address) {
+  if (address && typeof address === 'object' && typeof address.toString === 'function') {
+    return address.toString();
+  }
+
+  return String(address);
+}
+
+function createPaymentLinkSendError(message, details = {}) {
+  const error = new Error(message);
+  Object.assign(error, details);
+  return error;
+}
+
+function hasTransactionSignature(signature) {
+  return signature instanceof Uint8Array && signature.some((byte) => byte !== 0);
+}
+
+function preserveExistingPartialSignatures(originalTransaction, signedTransaction, walletPublicKey) {
+  const requiredSignatureCount = Number(
+    signedTransaction.message.header.numRequiredSignatures ?? 0
+  );
+  const signerAddresses = (signedTransaction.message.staticAccountKeys ?? [])
+    .slice(0, requiredSignatureCount)
+    .map((key) => key.toBase58());
+  const walletSignerIndex = signerAddresses.indexOf(walletPublicKey.toBase58());
+
+  if (walletSignerIndex === -1) {
+    return signedTransaction;
+  }
+
+  const mergedTransaction = new VersionedTransaction(signedTransaction.message);
+  mergedTransaction.signatures = signedTransaction.signatures.map((signature) => Uint8Array.from(signature));
+
+  for (let index = 0; index < requiredSignatureCount; index += 1) {
+    if (index === walletSignerIndex) {
+      continue;
+    }
+
+    const originalSignature = originalTransaction.signatures[index];
+    const currentSignature = mergedTransaction.signatures[index];
+    if (hasTransactionSignature(originalSignature) && !hasTransactionSignature(currentSignature)) {
+      mergedTransaction.signatures[index] = Uint8Array.from(originalSignature);
+    }
+  }
+
+  return mergedTransaction;
+}
+
+function classifyBroadcastFailure(message) {
+  const normalized = String(message || '').toLowerCase();
+
+  return {
+    rateLimited: normalized.includes('429') || normalized.includes('too many requests'),
+    payloadTooLarge: normalized.includes('413') || normalized.includes('payload too large'),
+    blockhashExpired:
+      normalized.includes('blockhash not found') ||
+      normalized.includes('transaction expired') ||
+      normalized.includes('last valid block height'),
+    duplicate:
+      normalized.includes('already processed') ||
+      normalized.includes('duplicate signature') ||
+      normalized.includes('signature verification failure'),
+  };
+}
+
+function formatLamportsToSol(lamports, decimals = 6) {
+  const value = typeof lamports === 'bigint' ? lamports : BigInt(lamports ?? 0);
+  const whole = value / BigInt(LAMPORTS_PER_SOL);
+  const fraction = value % BigInt(LAMPORTS_PER_SOL);
+  const paddedFraction = fraction.toString().padStart(9, '0').slice(0, decimals);
+  const trimmedFraction = paddedFraction.replace(/0+$/, '');
+
+  return trimmedFraction.length > 0
+    ? `${whole.toString()}.${trimmedFraction}`
+    : whole.toString();
+}
+
+function normalizeLamportsValue(value) {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(Math.trunc(value)) : '0';
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+  return '0';
+}
+
+function getClaimableLamportsTotal(utxos) {
+  return utxos.reduce(
+    (sum, utxo) => sum + BigInt(normalizeLamportsValue(utxo.amount)),
+    0n
+  );
+}
+
+const UMBRA_INDEXER_HEALTH_TTL_MS = 30_000;
+const umbraIndexerHealthCache = {
+  checkedAt: 0,
+  healthy: false,
+};
+
+function createUmbraIndexerUnavailableError(cause) {
+  const error = new Error(
+    'Umbra devnet indexer unavailable. Scanning claimable UTXOs requires Umbra\'s dedicated indexer service, and the configured devnet endpoint is currently unreachable. Helius Devnet RPC cannot replace this indexer by itself. If you have an alternate Umbra indexer, set VITE_UMBRA_INDEXER_URL in .env and retry.'
+  );
+  error.name = 'UmbraIndexerUnavailableError';
+  if (cause instanceof Error) {
+    error.cause = cause;
+  }
+  return error;
+}
+
+function isUmbraIndexerUnavailableError(error) {
+  if (error?.name === 'UmbraIndexerUnavailableError') {
+    return true;
+  }
+
+  const diagnostics = extractNestedErrorDiagnostics(error);
+  const haystack = [
+    error instanceof Error ? error.message : String(error),
+    ...diagnostics.messages,
+  ]
+    .join(' | ')
+    .toLowerCase();
+
+  const mentionsIndexerRead =
+    haystack.includes('fetchutxodata') ||
+    haystack.includes('getutxodata') ||
+    haystack.includes('indexer operation');
+  const mentionsNetworkFailure =
+    haystack.includes('network error') ||
+    haystack.includes('failed to fetch') ||
+    haystack.includes('networkerror when attempting to fetch resource') ||
+    haystack.includes('read service');
+
+  return mentionsIndexerRead && mentionsNetworkFailure;
+}
+
+async function assertUmbraIndexerAvailable() {
+  const now = Date.now();
+  if (umbraIndexerHealthCache.healthy && now - umbraIndexerHealthCache.checkedAt < UMBRA_INDEXER_HEALTH_TTL_MS) {
+    return;
+  }
+
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), 5000)
+    : null;
+
+  try {
+    const response = await fetch(UMBRA_CONFIG.indexerUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json, text/plain, */*',
+      },
+      signal: controller?.signal,
+    });
+
+    umbraIndexerHealthCache.checkedAt = now;
+    umbraIndexerHealthCache.healthy = Boolean(response);
+  } catch (error) {
+    umbraIndexerHealthCache.checkedAt = now;
+    umbraIndexerHealthCache.healthy = false;
+    throw createUmbraIndexerUnavailableError(error instanceof Error ? error : undefined);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
+function toClaimableUtxoDisplay(utxo, index) {
+  const amountLamports = normalizeLamportsValue(utxo.amount);
+  const stealthAddress = typeof utxo.destinationAddress === 'string' && utxo.destinationAddress.length > 0
+    ? utxo.destinationAddress
+    : typeof utxo.senderAddress === 'string' && utxo.senderAddress.length > 0
+      ? utxo.senderAddress
+      : 'Unknown stealth address';
+  const treeIndex = normalizeLamportsValue(utxo.treeIndex);
+  const insertionIndex = normalizeLamportsValue(utxo.insertionIndex);
+
+  return {
+    id: `${treeIndex}:${insertionIndex}:${index}`,
+    amountLamports,
+    stealthAddress,
+  };
+}
+
+function reconstructSignedUmbraTransaction(transaction) {
+  if (typeof transaction?.__umbraSignedWireTransactionBase64 === 'string') {
+    return VersionedTransaction.deserialize(
+      decodeBase64(transaction.__umbraSignedWireTransactionBase64)
+    );
+  }
+
+  const message = VersionedMessage.deserialize(transaction.messageBytes);
+  const versionedTransaction = new VersionedTransaction(message);
+  const requiredSignatureCount = Number(message.header.numRequiredSignatures ?? 0);
+  const signerAddresses = (message.staticAccountKeys ?? [])
+    .slice(0, requiredSignatureCount)
+    .map((key) => key.toBase58());
+  const signatures = signerAddresses.map((address) => transaction.signatures?.[address]);
+
+  if (signatures.some((signature) => !(signature instanceof Uint8Array))) {
+    throw createPaymentLinkSendError('Signed Umbra transaction is missing one or more signatures', {
+      signerAddresses,
+      availableSigners: Object.keys(transaction.signatures ?? {}),
+    });
+  }
+
+  versionedTransaction.signatures = signatures.map((signature) => Uint8Array.from(signature));
+  return versionedTransaction;
+}
+
+function getVersionedTransactionAccounts(versionedTransaction) {
+  return (versionedTransaction.message.staticAccountKeys ?? []).map((key) => key.toBase58());
+}
+
+async function getCreatePublicProofAccountRentDiagnostics(connection) {
+  const { getPublicStealthPoolDepositInputBufferSize } = await import('@umbra-privacy/umbra-codama');
+  const proofAccountSize = getPublicStealthPoolDepositInputBufferSize();
+  const proofAccountRentExemptLamports = await connection.getMinimumBalanceForRentExemption(
+    proofAccountSize,
+    'confirmed'
+  );
+
+  return {
+    proofAccountSize,
+    proofAccountRentExemptLamports,
+    proofAccountRentExemptSol: proofAccountRentExemptLamports / LAMPORTS_PER_SOL,
+  };
+}
+
+function createSignedTransactionDiagnosticsHook(connection, label) {
+  return async (signedTransaction) => {
+    const web3Transaction = reconstructSignedUmbraTransaction(signedTransaction);
+    const transactionAccounts = getVersionedTransactionAccounts(web3Transaction);
+    const proofAccountRentDiagnostics = label === 'CreatePublicUtxoProofAccount'
+      ? await getCreatePublicProofAccountRentDiagnostics(connection)
+      : null;
+    const simulation = await connection.simulateTransaction(web3Transaction, {
+      commitment: 'confirmed',
+      sigVerify: true,
+    });
+
+    if (simulation.value.err) {
+      throw createPaymentLinkSendError(`${label} simulation failed before broadcast`, {
+        signature: web3Transaction.signatures[0]
+          ? Buffer.from(web3Transaction.signatures[0]).toString('base64')
+          : null,
+        cause: JSON.stringify(simulation.value.err),
+        simulationLogs: simulation.value.logs ?? [],
+        unitsConsumed: simulation.value.unitsConsumed ?? null,
+        recentBlockhash: web3Transaction.message.recentBlockhash,
+        transactionAccounts,
+        ...proofAccountRentDiagnostics,
+        broadcastFailure: classifyBroadcastFailure(JSON.stringify(simulation.value.err)),
+      });
+    }
+
+    console.debug('[PaymentLinks] Umbra transaction simulation passed', {
+      label,
+      recentBlockhash: web3Transaction.message.recentBlockhash,
+      unitsConsumed: simulation.value.unitsConsumed ?? null,
+      instructionCount: web3Transaction.message.compiledInstructions.length,
+      transactionAccounts,
+      ...proofAccountRentDiagnostics,
+    });
+  };
+}
+
 function buildSignedPaymentLink(profile) {
   const params = new URLSearchParams({
     tab: 'send',
@@ -175,27 +493,26 @@ function verifyPaymentLinkProfile(profile) {
 }
 
 function loadStoredPaymentLinkProfile(ownerAddress) {
-  if (typeof window === 'undefined' || !ownerAddress) return null;
+  if (!ownerAddress) return null;
 
-  try {
-    const raw = window.localStorage.getItem(getPaymentLinkStorageKey(ownerAddress));
-    if (!raw) return null;
+  const parsed = paymentLinkProfileMemoryCache.get(ownerAddress) ?? null;
+  if (!parsed) return null;
 
-    const parsed = JSON.parse(raw);
-    if (!verifyPaymentLinkProfile(parsed)) {
-      window.localStorage.removeItem(getPaymentLinkStorageKey(ownerAddress));
-      return null;
-    }
-
-    return parsed;
-  } catch {
+  if (!verifyPaymentLinkProfile(parsed)) {
+    paymentLinkProfileMemoryCache.delete(ownerAddress);
     return null;
   }
+
+  return parsed;
 }
 
 function persistPaymentLinkProfile(profile) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(getPaymentLinkStorageKey(profile.ownerAddress), JSON.stringify(profile));
+  paymentLinkProfileMemoryCache.set(profile.ownerAddress, profile);
+}
+
+function clearPaymentLinkProfile(ownerAddress) {
+  if (!ownerAddress) return;
+  paymentLinkProfileMemoryCache.delete(ownerAddress);
 }
 
 function resolveSignedPaymentLink(value) {
@@ -228,47 +545,244 @@ function resolveSignedPaymentLink(value) {
   return profile;
 }
 
-function getNativePaymentFees(amount) {
-  const baseFees = calculateFees(amount, 'SOL');
+function getPaymentFees(amount, tokenSymbol) {
+  const baseFees = calculateFees(amount, tokenSymbol, 'net');
+  const networkSetupFeeLamports = ZK_OPERATOR_SETUP_LAMPORTS + ZK_TX_FEE_MARGIN_LAMPORTS;
+  const tokenDecimals = tokenSymbol === 'SOL' || tokenSymbol === 'WSOL' ? 9 : 6;
+
   return {
     ...baseFees,
-    aegisFeeLamports: 0,
-    aegisFee: 0,
-    aegisFeePercent: '0.0',
-    includesAegisFee: false,
-    totalFeeLamports: baseFees.umbraFeeLamports,
-    totalFees: baseFees.umbraFee,
-    totalLamports: baseFees.rawLamports,
-    total: baseFees.raw,
+    tokenSymbol,
+    tokenDecimals,
+    networkSetupFeeLamports,
+    networkSetupFee: networkSetupFeeLamports / LAMPORTS_PER_SOL,
+    walletRequiredLamports: isSolLikeToken(tokenSymbol)
+      && tokenSymbol === 'SOL'
+      ? baseFees.totalLamports + networkSetupFeeLamports
+      : networkSetupFeeLamports,
+    walletRequired: isSolLikeToken(tokenSymbol)
+      && tokenSymbol === 'SOL'
+      ? (baseFees.totalLamports + networkSetupFeeLamports) / LAMPORTS_PER_SOL
+      : networkSetupFeeLamports / LAMPORTS_PER_SOL,
   };
+}
+
+function formatTokenAmount(value, tokenSymbol) {
+  const decimals = getTokenDisplayDecimals(tokenSymbol);
+  return Number(value ?? 0).toFixed(decimals);
+}
+
+function buildPaymentReceiptHtml(receipt) {
+  const escaped = (value) => String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aegis Shield Private Payment Receipt</title>
+    <style>
+      body { font-family: Arial, sans-serif; background: #0b1020; color: #e6eefc; padding: 32px; }
+      .card { max-width: 720px; margin: 0 auto; background: #121a2b; border: 1px solid #25324d; border-radius: 18px; padding: 28px; }
+      h1 { margin: 0 0 8px; font-size: 24px; }
+      p { color: #9eb0cf; }
+      .grid { display: grid; grid-template-columns: 180px 1fr; gap: 12px 16px; margin-top: 24px; }
+      .label { color: #7f91b2; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+      .value { color: #e6eefc; word-break: break-word; }
+      .note { margin-top: 28px; padding: 14px 16px; border-radius: 12px; background: rgba(71, 181, 255, 0.08); border: 1px solid rgba(71, 181, 255, 0.2); color: #9ed8ff; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Aegis Shield Payment Receipt</h1>
+      <p>Verified Private Payment via Aegis Shield</p>
+      <div class="grid">
+        <div class="label">Date & Time</div><div class="value">${escaped(receipt.timestamp)}</div>
+        <div class="label">Amount</div><div class="value">${escaped(receipt.amount)} ${escaped(receipt.tokenSymbol)}</div>
+        <div class="label">Destination Alias</div><div class="value">${escaped(receipt.aliasAddress)}</div>
+        <div class="label">Transaction Signature</div><div class="value">${escaped(receipt.signature)}</div>
+        <div class="label">Network</div><div class="value">${escaped(receipt.network)}</div>
+      </div>
+      <div class="note">Verified Private Payment via Aegis Shield</div>
+    </div>
+  </body>
+</html>`;
+}
+
+function downloadPaymentReceipt(receipt) {
+  const blob = new Blob([buildPaymentReceiptHtml(receipt)], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `aegis-payment-receipt-${receipt.signature.slice(0, 12)}.html`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function extractNestedErrorDiagnostics(error) {
+  const visited = new Set();
+  const queue = [error];
+  const messages = [];
+  const logs = [];
+  const codes = [];
+  const instructionIndexes = [];
+  const signatures = [];
+  const recentBlockhashes = [];
+  const transactionAccounts = [];
+  const proofAccountSizes = [];
+  const proofAccountRentExemptLamports = [];
+  const proofAccountRentExemptSol = [];
+  let unitsConsumed = null;
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+
+    const message = current instanceof Error
+      ? current.message
+      : typeof current.message === 'string'
+        ? current.message
+        : null;
+    if (message && !messages.includes(message)) {
+      messages.push(message);
+    }
+
+    if (typeof current.signature === 'string' && !signatures.includes(current.signature)) {
+      signatures.push(current.signature);
+    }
+
+    if (typeof current.recentBlockhash === 'string' && !recentBlockhashes.includes(current.recentBlockhash)) {
+      recentBlockhashes.push(current.recentBlockhash);
+    }
+
+    if (Array.isArray(current.transactionAccounts)) {
+      current.transactionAccounts.forEach((account) => {
+        const normalized = String(account);
+        if (!transactionAccounts.includes(normalized)) {
+          transactionAccounts.push(normalized);
+        }
+      });
+    }
+
+    if (typeof current.proofAccountSize === 'number') {
+      proofAccountSizes.push(current.proofAccountSize);
+    }
+    if (typeof current.proofAccountRentExemptLamports === 'number') {
+      proofAccountRentExemptLamports.push(current.proofAccountRentExemptLamports);
+    }
+    if (typeof current.proofAccountRentExemptSol === 'number') {
+      proofAccountRentExemptSol.push(current.proofAccountRentExemptSol);
+    }
+
+    if (Array.isArray(current.simulationLogs)) {
+      current.simulationLogs.forEach((log) => {
+        if (log && !logs.includes(log)) {
+          logs.push(log);
+        }
+      });
+    }
+
+    if (typeof current.unitsConsumed === 'number' || typeof current.unitsConsumed === 'bigint') {
+      unitsConsumed = current.unitsConsumed;
+    }
+
+    if (typeof current.instructionIndex === 'number') {
+      instructionIndexes.push(current.instructionIndex);
+    }
+
+    if (typeof current.errorCode === 'number') {
+      codes.push(current.errorCode);
+    }
+
+    if (current.context && typeof current.context === 'object') {
+      if (Array.isArray(current.context.logs)) {
+        current.context.logs.forEach((log) => {
+          if (log && !logs.includes(log)) {
+            logs.push(log);
+          }
+        });
+      }
+      if (typeof current.context.unitsConsumed === 'number' || typeof current.context.unitsConsumed === 'bigint') {
+        unitsConsumed = current.context.unitsConsumed;
+      }
+      if (typeof current.context.index === 'number') {
+        instructionIndexes.push(current.context.index);
+      }
+      if (typeof current.context.code === 'number') {
+        codes.push(current.context.code);
+      }
+    }
+
+    if (current.cause) {
+      queue.push(current.cause);
+    }
+  }
+
+  return {
+    messages,
+    logs,
+    codes: [...new Set(codes)],
+    instructionIndexes: [...new Set(instructionIndexes)],
+    signatures,
+    recentBlockhashes,
+    transactionAccounts,
+    proofAccountSizes: [...new Set(proofAccountSizes)],
+    proofAccountRentExemptLamports: [...new Set(proofAccountRentExemptLamports)],
+    proofAccountRentExemptSol: [...new Set(proofAccountRentExemptSol.map((value) => value.toFixed(9)))],
+    unitsConsumed,
+  };
+}
+
+function appendDiagnosticLine(detailLines, label, values) {
+  const normalizedValues = (Array.isArray(values) ? values : [values])
+    .filter((value) => value !== null && value !== undefined && `${value}`.length > 0)
+    .map((value) => (typeof value === 'bigint' ? value.toString() : String(value)));
+
+  if (normalizedValues.length === 0) {
+    return;
+  }
+
+  detailLines.push(`${label}: ${normalizedValues.join(', ')}`);
+}
+
 function formatErrorForDisplay(error, fallbackPrefix) {
-  const message = error instanceof Error ? error.message : String(error);
-  const signature = typeof error?.signature === 'string' ? error.signature : null;
-  const simulationLogs = Array.isArray(error?.simulationLogs)
-    ? error.simulationLogs.filter(Boolean)
-    : [];
-  const causeMessage = error?.cause instanceof Error
-    ? error.cause.message
-    : typeof error?.cause === 'string'
-      ? error.cause
-      : null;
+  const diagnostics = extractNestedErrorDiagnostics(error);
+  const message = diagnostics.messages[0] ?? (error instanceof Error ? error.message : String(error));
 
   const detailLines = [];
-  if (signature) {
-    detailLines.push(`Signature: ${signature}`);
+  appendDiagnosticLine(detailLines, 'Signature', diagnostics.signatures);
+  appendDiagnosticLine(detailLines, 'Recent blockhash', diagnostics.recentBlockhashes);
+  appendDiagnosticLine(detailLines, 'Failing instruction index', diagnostics.instructionIndexes);
+  appendDiagnosticLine(detailLines, 'Program error code', diagnostics.codes);
+  appendDiagnosticLine(detailLines, 'Units consumed', diagnostics.unitsConsumed);
+  appendDiagnosticLine(detailLines, 'Public proof account size', diagnostics.proofAccountSizes);
+  appendDiagnosticLine(detailLines, 'Public proof rent-exempt lamports', diagnostics.proofAccountRentExemptLamports);
+  appendDiagnosticLine(detailLines, 'Public proof rent-exempt SOL', diagnostics.proofAccountRentExemptSol);
+  const nestedMessages = diagnostics.messages.slice(1).filter((value) => value !== message);
+  if (nestedMessages.length > 0) {
+    detailLines.push('Causes:');
+    detailLines.push(...nestedMessages);
   }
-  if (causeMessage && causeMessage !== message) {
-    detailLines.push(`Cause: ${causeMessage}`);
+  if (diagnostics.transactionAccounts.length > 0) {
+    detailLines.push('Transaction accounts:');
+    detailLines.push(...diagnostics.transactionAccounts);
   }
-  if (simulationLogs.length > 0) {
+  if (diagnostics.logs.length > 0) {
     detailLines.push('Simulation logs:');
-    detailLines.push(...simulationLogs);
+    detailLines.push(...diagnostics.logs);
   }
 
   if (detailLines.length === 0) {
@@ -327,7 +841,12 @@ async function createNativeUmbraSession(walletContext, setStep) {
           for (const input of inputs) {
             const transaction = VersionedTransaction.deserialize(input.transaction);
             const signedTransaction = await signTransaction(transaction);
-            outputs.push({ signedTransaction: signedTransaction.serialize() });
+            const mergedTransaction = preserveExistingPartialSignatures(
+              transaction,
+              signedTransaction,
+              walletContext.publicKey
+            );
+            outputs.push({ signedTransaction: mergedTransaction.serialize() });
           }
           return outputs;
         },
@@ -366,8 +885,11 @@ async function createNativeUmbraSession(walletContext, setStep) {
   };
 }
 
-async function waitForSignatureConfirmation(connection, signature, label) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+async function waitForSignatureConfirmation(connection, signature, label, options = {}) {
+  const maxAttempts = options.maxAttempts ?? 20;
+  const pollingIntervalMs = options.pollingIntervalMs ?? 1200;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const status = await connection.getSignatureStatus(signature, {
       searchTransactionHistory: true,
     });
@@ -381,10 +903,100 @@ async function waitForSignatureConfirmation(connection, signature, label) {
       return signature;
     }
 
-    await delay(1200);
+    await delay(pollingIntervalMs);
   }
 
-  throw new Error(`${label} confirmation timed out after broadcast`);
+  const lastStatus = await connection.getSignatureStatus(signature, {
+    searchTransactionHistory: true,
+  });
+
+  throw createPaymentLinkSendError(`${label} confirmation timed out after broadcast`, {
+    signature,
+    confirmationStatus: lastStatus?.value?.confirmationStatus ?? null,
+    cause: lastStatus?.value?.err
+      ? `Last observed on-chain error: ${JSON.stringify(lastStatus.value.err)}`
+      : null,
+  });
+}
+
+async function sendPaymentLinkAegisFeeTransfer(connection, walletContext, tokenSymbol, amountInSmallestUnit, setStep) {
+  if (!walletContext.publicKey || !walletContext.signTransaction || amountInSmallestUnit <= 0) {
+    return null;
+  }
+
+  const transferTransaction = new Transaction();
+
+  if (tokenSymbol === 'SOL') {
+    transferTransaction.add(
+      SystemProgram.transfer({
+        fromPubkey: walletContext.publicKey,
+        toPubkey: new PublicKey(AEGIS_TREASURY_ADDRESS),
+        lamports: amountInSmallestUnit,
+      })
+    );
+  } else {
+    const mint = new PublicKey(TOKEN_MINTS[tokenSymbol]);
+    const owner = walletContext.publicKey;
+    const treasuryOwner = new PublicKey(AEGIS_TREASURY_ADDRESS);
+    const senderAta = await getAssociatedTokenAddress(mint, owner, false, TOKEN_PROGRAM_ID);
+    const treasuryAta = await getAssociatedTokenAddress(mint, treasuryOwner, true, TOKEN_PROGRAM_ID);
+    const treasuryAtaInfo = await connection.getAccountInfo(treasuryAta, 'confirmed');
+
+    if (!treasuryAtaInfo) {
+      transferTransaction.add(
+        createAssociatedTokenAccountInstruction(
+          owner,
+          treasuryAta,
+          treasuryOwner,
+          mint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+
+    transferTransaction.add(
+      createTransferInstruction(
+        senderAta,
+        treasuryAta,
+        owner,
+        amountInSmallestUnit,
+        [],
+        TOKEN_PROGRAM_ID
+      )
+    );
+  }
+
+  transferTransaction.feePayer = walletContext.publicKey;
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  transferTransaction.recentBlockhash = latestBlockhash.blockhash;
+
+  setStep?.(`Routing Aegis protocol fee in ${tokenSymbol}...`);
+  const signedTransaction = await walletContext.signTransaction(transferTransaction);
+
+  const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
+    skipPreflight: false,
+    maxRetries: 3,
+    preflightCommitment: 'confirmed',
+  });
+
+  const confirmation = await connection.confirmTransaction(
+    {
+      signature,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    },
+    'confirmed'
+  );
+
+  if (confirmation.value.err) {
+    throw createPaymentLinkSendError('Aegis fee transfer failed during confirmation', {
+      signature,
+      cause: JSON.stringify(confirmation.value.err),
+    });
+  }
+
+  return signature;
 }
 
 async function pollForReceiverCommitmentRegistration(queryUserAccount, ownerAddress, setStep) {
@@ -686,9 +1298,26 @@ async function ensureRegisteredReceiverMetadata(session, walletContext, setStep)
         if (polledResult) {
           result = polledResult;
         } else {
-          throw new Error(
-            'Umbra anonymous registration is still processing after extended on-chain polling. No further wallet approvals are needed. Wait a few minutes and retry to refresh the registration state.'
-          );
+          const refreshedResult = await queryUserAccount(ownerAddress);
+          const canBypassAnonymousFinalization =
+            NETWORK === 'devnet' &&
+            refreshedResult.state === 'exists' &&
+            Boolean(refreshedResult.data?.isUserAccountX25519KeyRegistered);
+
+          if (!canBypassAnonymousFinalization) {
+            throw new Error(
+              'Umbra anonymous registration is still processing after extended on-chain polling. No further wallet approvals are needed. Wait a few minutes and retry to refresh the registration state.'
+            );
+          }
+
+          setStep?.('Devnet anonymous registration callback is being bypassed locally to continue payment-link generation...');
+          result = {
+            ...refreshedResult,
+            data: {
+              ...refreshedResult.data,
+              isUserCommitmentRegistered: true,
+            },
+          };
         }
       } else {
       result = await maybeRecoverRegistrationAfterRpcFailure({
@@ -745,42 +1374,96 @@ async function createAliasAccountInfoProvider(runtime, linkProfile) {
     decodeJsonPayload(linkProfile.accountPayload),
     aliasPda
   );
+  const aliasPdaKey = toAddressKey(aliasPda);
+
+  console.debug('[PaymentLinks] alias provider prepared', {
+    aliasAddress: linkProfile.aliasAddress,
+    aliasPda: aliasPdaKey,
+    snapshotExists: accountSnapshot.exists,
+    snapshotProgramAddress: accountSnapshot.programAddress,
+    snapshotDataLength: accountSnapshot.data.length,
+  });
 
   return async (addresses, options) => {
-    const passthroughAddresses = addresses.filter((address) => address !== aliasPda);
+    const requestedKeys = addresses.map((address) => toAddressKey(address));
+    const requestedAliasAddress = addresses.find((address) => toAddressKey(address) === aliasPdaKey);
+    const passthroughAddresses = addresses.filter((address) => toAddressKey(address) !== aliasPdaKey);
     const result = passthroughAddresses.length > 0
       ? await baseAccountInfoProvider(passthroughAddresses, options)
       : new Map();
 
-    if (addresses.includes(aliasPda)) {
-      result.set(aliasPda, accountSnapshot);
+    console.debug('[PaymentLinks] alias provider lookup', {
+      aliasAddress: linkProfile.aliasAddress,
+      aliasPda: aliasPdaKey,
+      requestedKeys,
+      matchedAliasKey: requestedAliasAddress ? toAddressKey(requestedAliasAddress) : null,
+      passthroughKeys: passthroughAddresses.map((address) => toAddressKey(address)),
+      baseResultKeys: [...result.keys()].map((address) => toAddressKey(address)),
+      options,
+    });
+
+    if (requestedAliasAddress) {
+      result.set(requestedAliasAddress, {
+        ...accountSnapshot,
+        address: requestedAliasAddress,
+      });
+
+      console.debug('[PaymentLinks] alias snapshot injected', {
+        aliasPda: aliasPdaKey,
+        mapHasAlias: result.has(requestedAliasAddress),
+        snapshotExists: accountSnapshot.exists,
+        snapshotProgramAddress: accountSnapshot.programAddress,
+        snapshotDataLength: accountSnapshot.data.length,
+      });
     }
 
     return result;
   };
 }
 
-async function scanNativeClaimables(session, aliasAddress) {
+async function scanNativeClaimables(session, aliasAddress = null) {
   const scanClaimable = session.runtime.getClaimableUtxoScannerFunction({ client: session.client });
-  const scanResult = await scanClaimable(0, 0);
+  const scanResult = await scanClaimable(0n, 0n);
 
-  return [...(scanResult.received ?? []), ...(scanResult.publicReceived ?? [])].filter(
-    (utxo) => utxo.destinationAddress === aliasAddress
-  );
+  const claimables = [...(scanResult.received ?? []), ...(scanResult.publicReceived ?? [])];
+  const filteredClaimables = aliasAddress
+    ? claimables.filter((utxo) => utxo.destinationAddress === aliasAddress)
+    : claimables;
+
+  return filteredClaimables.map((utxo) => ({
+    ...utxo,
+    amount: normalizeLamportsValue(utxo.amount),
+  }));
 }
 
 export function PaymentLinks() {
   const [tab, setTab] = useState('my-link');
-  const { connected } = useWallet();
+  const { connected, publicKey } = useWallet();
+  const walletAddress = publicKey?.toBase58() ?? null;
+  const previousWalletAddressRef = useRef(walletAddress);
+  const [sessionResetKey, setSessionResetKey] = useState(0);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+
+    purgePersistedPaymentLinkProfilesFromStorage();
 
     const search = new URLSearchParams(window.location.search);
     if (search.get('tab') === 'send' || search.get('a')) {
       setTab('send');
     }
   }, []);
+
+  useEffect(() => {
+    const previousWalletAddress = previousWalletAddressRef.current;
+    if (previousWalletAddress === walletAddress) {
+      return;
+    }
+
+    purgePersistedPaymentLinkProfilesFromStorage();
+    setSessionResetKey((current) => current + 1);
+    previousWalletAddressRef.current = walletAddress;
+  }, [walletAddress]);
 
   return (
     <div className="space-y-6">
@@ -844,7 +1527,13 @@ export function PaymentLinks() {
             })}
           </div>
 
-          {tab === 'my-link' ? <MyPaymentLink /> : <SendToAddress />}
+          {tab === 'my-link' ? (
+            <MyPaymentLink key={`my-link:${walletAddress ?? 'disconnected'}:${sessionResetKey}`} />
+          ) : tab === 'claim' ? (
+            <ClaimPayments key={`claim:${walletAddress ?? 'disconnected'}:${sessionResetKey}`} />
+          ) : (
+            <SendToAddress key={`send:${walletAddress ?? 'disconnected'}:${sessionResetKey}`} />
+          )}
         </>
       )}
     </div>
@@ -854,33 +1543,64 @@ export function PaymentLinks() {
 function MyPaymentLink() {
   const walletContext = useWallet();
   const toast = useToast();
+  const activeSessionRef = useRef(null);
+  const operationTokenRef = useRef(0);
 
   const [paymentProfile, setPaymentProfile] = useState(null);
   const [error, setError] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
-  const [claimResult, setClaimResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
+
+  const destroyActiveSession = useCallback(() => {
+    activeSessionRef.current?.destroy?.();
+    activeSessionRef.current = null;
+  }, []);
+
+  const beginOperation = useCallback(() => {
+    destroyActiveSession();
+    operationTokenRef.current += 1;
+    return operationTokenRef.current;
+  }, [destroyActiveSession]);
+
+  const isCurrentOperation = useCallback(
+    (token) => operationTokenRef.current === token,
+    []
+  );
+
+  useEffect(() => () => {
+    operationTokenRef.current += 1;
+    destroyActiveSession();
+  }, [destroyActiveSession]);
 
   useEffect(() => {
     if (!walletContext.publicKey) {
       setPaymentProfile(null);
+      setError(null);
+      setCopiedLink(false);
+      setLoading(false);
+      setLoadingStep('');
       return;
     }
 
+    setError(null);
+    setCopiedLink(false);
+    setLoading(false);
+    setLoadingStep('');
     setPaymentProfile(loadStoredPaymentLinkProfile(walletContext.publicKey.toBase58()));
   }, [walletContext.publicKey]);
 
   const paymentLink = paymentProfile ? buildSignedPaymentLink(paymentProfile) : null;
 
   const handleGenerate = useCallback(async () => {
+    const operationToken = beginOperation();
     setError(null);
-    setClaimResult(null);
     setLoading(true);
 
     let session;
     try {
       session = await createNativeUmbraSession(walletContext, setLoadingStep);
+      activeSessionRef.current = session;
       const receiverMetadata = await ensureRegisteredReceiverMetadata(session, walletContext, setLoadingStep);
 
       setLoadingStep('Creating owner-hidden alias for this payment link...');
@@ -908,89 +1628,27 @@ function MyPaymentLink() {
       };
 
       persistPaymentLinkProfile(nextProfile);
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
       setPaymentProfile(nextProfile);
       toast.info('Umbra-native payment link created');
     } catch (err) {
       const formattedError = formatErrorForDisplay(err, 'Payment link generation failed');
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
       setError(formattedError);
       toast.error(formattedError, { title: 'Failed' });
     } finally {
+      activeSessionRef.current = null;
       session?.destroy?.();
-      setLoading(false);
-      setLoadingStep('');
-    }
-  }, [toast, walletContext]);
-
-  const handleClaim = useCallback(async () => {
-    setError(null);
-    setClaimResult(null);
-    setLoading(true);
-
-    let session;
-    try {
-      if (!walletContext.publicKey || !paymentProfile) {
-        throw new Error('Load your payment link first');
+      if (isCurrentOperation(operationToken)) {
+        setLoading(false);
+        setLoadingStep('');
       }
-
-      session = await createNativeUmbraSession(walletContext, setLoadingStep);
-
-      setLoadingStep('Scanning Umbra claimable UTXOs for this link...');
-      const claimableUtxos = await scanNativeClaimables(session, paymentProfile.aliasAddress);
-      if (claimableUtxos.length === 0) {
-        throw new Error('No pending receiver-claimable payments were found for this link');
-      }
-
-      const totalAmount = claimableUtxos.reduce(
-        (sum, utxo) => sum + BigInt(utxo.amount),
-        0n
-      );
-
-      setLoadingStep('Claiming receiver-claimable UTXOs into Umbra encrypted balance...');
-      const relayer = session.runtime.getUmbraRelayer({ apiEndpoint: UMBRA_CONFIG.relayerUrl });
-      const claimToEncryptedBalance =
-        session.runtime.getReceiverClaimableUtxoToEncryptedBalanceClaimerFunction(
-          { client: session.client },
-          {
-            zkProver: session.runtime.getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver(),
-            relayer,
-          }
-        );
-
-      const claimResponse = await claimToEncryptedBalance(claimableUtxos);
-
-      setLoadingStep('Withdrawing claimed SOL from Umbra encrypted balance to connected wallet...');
-      const withdrawToWallet =
-        session.runtime.getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction({
-          client: session.client,
-        });
-
-      const withdrawSignature = await withdrawToWallet(
-        walletContext.publicKey.toBase58(),
-        TOKEN_MINTS.SOL,
-        totalAmount
-      );
-
-      const firstBatch = claimResponse.batches.values().next().value;
-      setClaimResult({
-        claimSignature: firstBatch?.callbackSignature ?? firstBatch?.txSignature ?? null,
-        withdrawSignature,
-        amount: Number(totalAmount) / LAMPORTS_PER_SOL,
-        destinationAddress: walletContext.publicKey.toBase58(),
-      });
-
-      toast.success('Receiver-claimable payments claimed to connected wallet', {
-        title: 'Success',
-        txSig: withdrawSignature,
-      });
-    } catch (err) {
-      setError(err.message);
-      toast.error(err.message, { title: 'Claim Failed' });
-    } finally {
-      session?.destroy?.();
-      setLoading(false);
-      setLoadingStep('');
     }
-  }, [paymentProfile, toast, walletContext]);
+  }, [beginOperation, isCurrentOperation, toast, walletContext]);
 
   const copyLink = async () => {
     if (!paymentLink) return;
@@ -1099,47 +1757,6 @@ function MyPaymentLink() {
                 </p>
               </div>
 
-              <div className="p-3 rounded-xl bg-aegis-card border border-aegis-border space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold text-aegis-subtext">Claim Incoming Payments</p>
-                    <p className="text-[10px] text-aegis-muted mt-1">
-                      Scan this link&apos;s receiver-claimable UTXOs, claim them into Umbra encrypted balance, then withdraw SOL to the connected wallet.
-                    </p>
-                  </div>
-                  <Button onClick={handleClaim} variant="secondary" size="sm" icon={ArrowRight}>
-                    Claim Now
-                  </Button>
-                </div>
-                {claimResult && (
-                  <div className="text-xs text-aegis-subtext space-y-2">
-                    <p>
-                      Claimed {formatAmount(claimResult.amount)} SOL to {shortenAddress(claimResult.destinationAddress, 6)}
-                    </p>
-                    {claimResult.claimSignature && (
-                      <a
-                        href={`https://explorer.solana.com/tx/${claimResult.claimSignature}?cluster=${NETWORK}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 text-aegis-cyan underline mr-4"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        View claim transaction
-                      </a>
-                    )}
-                    <a
-                      href={`https://explorer.solana.com/tx/${claimResult.withdrawSignature}?cluster=${NETWORK}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 text-aegis-cyan underline"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      View withdraw transaction
-                    </a>
-                  </div>
-                )}
-              </div>
-
               <div className="p-3 rounded-xl bg-aegis-card border border-aegis-border">
                 <p className="text-xs font-semibold text-aegis-subtext mb-2">How the Native Flow Works</p>
                 <div className="space-y-2">
@@ -1167,22 +1784,475 @@ function MyPaymentLink() {
   );
 }
 
+function ClaimPayments() {
+  const walletContext = useWallet();
+  const toast = useToast();
+  const activeSessionRef = useRef(null);
+  const rawClaimableUtxosRef = useRef([]);
+  const operationTokenRef = useRef(0);
+
+  const [mvkReady, setMvkReady] = useState(false);
+  const [claimableUtxos, setClaimableUtxos] = useState([]);
+  const [claimableLamports, setClaimableLamports] = useState('0');
+  const [claimResult, setClaimResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState('');
+
+  const destroyActiveSession = useCallback(() => {
+    activeSessionRef.current?.destroy?.();
+    activeSessionRef.current = null;
+  }, []);
+
+  const beginOperation = useCallback(() => {
+    destroyActiveSession();
+    operationTokenRef.current += 1;
+    return operationTokenRef.current;
+  }, [destroyActiveSession]);
+
+  const isCurrentOperation = useCallback(
+    (token) => operationTokenRef.current === token,
+    []
+  );
+
+  useEffect(() => () => {
+    operationTokenRef.current += 1;
+    destroyActiveSession();
+  }, [destroyActiveSession]);
+
+  useEffect(() => {
+    setMvkReady(false);
+    rawClaimableUtxosRef.current = [];
+    setClaimableUtxos([]);
+    setClaimableLamports('0');
+    setClaimResult(null);
+    setError(null);
+    setLoading(false);
+    setLoadingStep('');
+  }, [walletContext.publicKey]);
+
+  const handleDeriveMvk = useCallback(async () => {
+    const operationToken = beginOperation();
+    setError(null);
+    setClaimResult(null);
+    rawClaimableUtxosRef.current = [];
+    setClaimableUtxos([]);
+    setClaimableLamports('0');
+    setLoading(true);
+
+    let session;
+    try {
+      session = await createNativeUmbraSession(walletContext, setLoadingStep);
+      activeSessionRef.current = session;
+
+      if (!isCurrentOperation(operationToken)) {
+        session.destroy?.();
+        return;
+      }
+
+      setMvkReady(true);
+      toast.success('Master Viewing Key derived for this session', { title: 'Ready' });
+    } catch (err) {
+      const formattedError = formatErrorForDisplay(err, 'MVK derivation failed');
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+      activeSessionRef.current = null;
+      session?.destroy?.();
+      setMvkReady(false);
+      setError(formattedError);
+      toast.error(formattedError, { title: 'Claim Setup Failed' });
+    } finally {
+      if (isCurrentOperation(operationToken)) {
+        setLoading(false);
+        setLoadingStep('');
+      }
+    }
+  }, [beginOperation, isCurrentOperation, toast, walletContext]);
+
+  const handleScan = useCallback(async () => {
+    const operationToken = operationTokenRef.current + 1;
+    operationTokenRef.current = operationToken;
+    setError(null);
+    setClaimResult(null);
+    setLoading(true);
+
+    let session = activeSessionRef.current;
+    try {
+      if (!walletContext.publicKey) {
+        throw new Error('Connect your wallet first');
+      }
+      if (!mvkReady) {
+        throw new Error('Derive your Master Viewing Key before scanning');
+      }
+
+      if (!session) {
+        session = await createNativeUmbraSession(walletContext, setLoadingStep);
+        activeSessionRef.current = session;
+      }
+
+      setLoadingStep('Checking Umbra devnet indexer...');
+      await assertUmbraIndexerAvailable();
+
+      setLoadingStep('Scanning stealth addresses...');
+      const scannedUtxos = await scanNativeClaimables(session);
+      const normalizedUtxos = scannedUtxos.map(toClaimableUtxoDisplay);
+      const totalLamports = getClaimableLamportsTotal(scannedUtxos);
+
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+
+      rawClaimableUtxosRef.current = scannedUtxos;
+      setClaimableUtxos(normalizedUtxos);
+      setClaimableLamports(totalLamports.toString());
+      toast.info(
+        normalizedUtxos.length > 0
+          ? `Found ${normalizedUtxos.length} claimable UTXO${normalizedUtxos.length === 1 ? '' : 's'}`
+          : 'No claimable payments found for this wallet'
+      );
+    } catch (err) {
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+      const formattedError = isUmbraIndexerUnavailableError(err)
+        ? err.message
+        : formatErrorForDisplay(err, 'UTXO scan failed');
+      rawClaimableUtxosRef.current = [];
+      setClaimableUtxos([]);
+      setClaimableLamports('0');
+      setError(formattedError);
+      toast.error(formattedError, { title: 'Scan Failed' });
+    } finally {
+      if (isCurrentOperation(operationToken)) {
+        setLoading(false);
+        setLoadingStep('');
+      }
+    }
+  }, [isCurrentOperation, mvkReady, toast, walletContext]);
+
+  const handleSweep = useCallback(async () => {
+    const operationToken = operationTokenRef.current + 1;
+    operationTokenRef.current = operationToken;
+    setError(null);
+    setClaimResult(null);
+    setLoading(true);
+
+    let session = activeSessionRef.current;
+    let claimStage = 'Claim preparation';
+    try {
+      if (!walletContext.publicKey) {
+        throw new Error('Connect your wallet first');
+      }
+      if (!mvkReady) {
+        throw new Error('Derive your Master Viewing Key before claiming');
+      }
+      if (rawClaimableUtxosRef.current.length === 0) {
+        throw new Error('Scan for claimable UTXOs before sweeping');
+      }
+
+      if (!session) {
+        claimStage = 'Umbra session setup';
+        session = await createNativeUmbraSession(walletContext, setLoadingStep);
+        activeSessionRef.current = session;
+      }
+
+      const claimableUtxosForClaim = rawClaimableUtxosRef.current.map((utxo) => ({
+        ...utxo,
+        amount: BigInt(utxo.amount),
+      }));
+
+      const totalAmount = getClaimableLamportsTotal(rawClaimableUtxosRef.current);
+
+      setLoadingStep('Claiming scanned UTXOs into Umbra encrypted balance...');
+      const relayer = session.runtime.getUmbraRelayer({ apiEndpoint: UMBRA_CONFIG.relayerUrl });
+      const claimToEncryptedBalance =
+        session.runtime.getReceiverClaimableUtxoToEncryptedBalanceClaimerFunction(
+          { client: session.client },
+          {
+            zkProver: session.runtime.getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver(),
+            relayer,
+          }
+        );
+
+      claimStage = 'Relayer claim';
+  const claimResponse = await claimToEncryptedBalance(claimableUtxosForClaim);
+
+      claimStage = 'Wallet withdrawal';
+      setLoadingStep('Sweeping claimed SOL into your connected wallet...');
+      const withdrawToWallet =
+        session.runtime.getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction({
+          client: session.client,
+        });
+
+      const withdrawSignature = await withdrawToWallet(
+        walletContext.publicKey.toBase58(),
+        TOKEN_MINTS.SOL,
+        totalAmount
+      );
+
+      const firstBatch = claimResponse.batches.values().next().value;
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+
+      setClaimResult({
+        claimSignature: firstBatch?.callbackSignature ?? firstBatch?.txSignature ?? null,
+        withdrawSignature,
+        amountLamports: totalAmount.toString(),
+        destinationAddress: walletContext.publicKey.toBase58(),
+      });
+      rawClaimableUtxosRef.current = [];
+      setClaimableUtxos([]);
+      setClaimableLamports('0');
+
+      toast.success('Claimable payments swept into connected wallet', {
+        title: 'Success',
+        txSig: withdrawSignature,
+      });
+    } catch (err) {
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+      const formattedError = formatErrorForDisplay(err, `${claimStage} failed`);
+      setError(formattedError);
+      toast.error(formattedError, { title: 'Sweep Failed' });
+    } finally {
+      if (isCurrentOperation(operationToken)) {
+        setLoading(false);
+        setLoadingStep('');
+      }
+    }
+  }, [isCurrentOperation, mvkReady, toast, walletContext]);
+
+  if (loading) {
+    return (
+      <Card>
+        <CardBody>
+          <ZKLoader step={loadingStep} />
+        </CardBody>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <div>
+            <h2 className="text-base font-semibold text-aegis-text">Claim Stealth Payments</h2>
+            <p className="text-xs text-aegis-muted mt-0.5">
+              Derive your MVK, scan Umbra claimables for the connected wallet, and sweep them home on {NETWORK}
+            </p>
+          </div>
+        </CardHeader>
+
+        <CardBody className="space-y-5">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className={`rounded-xl p-3 border ${mvkReady ? 'border-aegis-green/20 bg-aegis-green/5' : 'border-aegis-purple/20 bg-aegis-purple/5'}`}>
+              <p className="text-[10px] text-aegis-muted mb-1">Step 1</p>
+              <p className="text-sm font-semibold text-aegis-text">Derive MVK</p>
+              <p className="text-[10px] text-aegis-muted mt-1">
+                Authorize a wallet message signature so Umbra can derive your master viewing key for this session.
+              </p>
+            </div>
+            <div className={`rounded-xl p-3 border ${mvkReady ? 'border-aegis-cyan/20 bg-aegis-cyan/5' : 'border-aegis-border bg-aegis-card'}`}>
+              <p className="text-[10px] text-aegis-muted mb-1">Step 2</p>
+              <p className="text-sm font-semibold text-aegis-text">Scan UTXOs</p>
+              <p className="text-[10px] text-aegis-muted mt-1">
+                Search Umbra stealth addresses for receiver-claimable UTXOs controlled by this wallet.
+              </p>
+            </div>
+            <div className={`rounded-xl p-3 border ${claimableUtxos.length > 0 ? 'border-aegis-green/20 bg-aegis-green/5' : 'border-aegis-border bg-aegis-card'}`}>
+              <p className="text-[10px] text-aegis-muted mb-1">Step 3</p>
+              <p className="text-sm font-semibold text-aegis-text">Sweep Funds</p>
+              <p className="text-[10px] text-aegis-muted mt-1">
+                Claim scanned UTXOs into Umbra encrypted balance, then withdraw the total to your connected wallet.
+              </p>
+            </div>
+          </div>
+
+          {error && (
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-aegis-red/5 border border-aegis-red/20">
+              <AlertTriangle className="w-4 h-4 text-aegis-red flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-aegis-red whitespace-pre-wrap">{error}</p>
+            </div>
+          )}
+
+          <div className="rounded-xl border border-aegis-border bg-aegis-card p-4 space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-xs font-semibold text-aegis-subtext">Master Viewing Key Session</p>
+                <p className="text-[10px] text-aegis-muted mt-1">
+                  Status: {mvkReady ? 'Derived and ready to scan' : 'Not derived yet'}
+                </p>
+              </div>
+              <Button onClick={handleDeriveMvk} icon={Eye}>
+                {mvkReady ? 'Re-Derive MVK' : 'Derive MVK'}
+              </Button>
+            </div>
+
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-xs font-semibold text-aegis-subtext">Available Claimables</p>
+                <p className="text-[10px] text-aegis-muted mt-1">
+                  Scan all receiver-claimable UTXOs associated with this connected wallet.
+                </p>
+              </div>
+              <Button
+                onClick={handleScan}
+                variant="secondary"
+                icon={RefreshCw}
+                disabled={!mvkReady}
+              >
+                Scan UTXOs
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl p-4 border border-aegis-cyan/20 bg-aegis-cyan/5">
+              <p className="text-[10px] text-aegis-muted mb-1">Claimable Balance</p>
+              <p className="text-2xl font-semibold text-aegis-text">
+                {formatLamportsToSol(claimableLamports)} SOL
+              </p>
+              <p className="text-[10px] text-aegis-muted mt-1">
+                {claimableUtxos.length} claimable UTXO{claimableUtxos.length === 1 ? '' : 's'} found
+              </p>
+            </div>
+            <div className="rounded-xl p-4 border border-aegis-purple/20 bg-aegis-purple/5">
+              <p className="text-[10px] text-aegis-muted mb-1">Sweep Destination</p>
+              <p className="text-sm font-mono text-aegis-purple">
+                {walletContext.publicKey ? shortenAddress(walletContext.publicKey.toBase58(), 8) : 'Wallet not connected'}
+              </p>
+              <p className="text-[10px] text-aegis-muted mt-1">
+                Uses the existing direct withdraw path into the connected main wallet.
+              </p>
+            </div>
+          </div>
+
+          {claimableUtxos.length > 0 && (
+            <div className="rounded-xl border border-aegis-border bg-aegis-card p-4 space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-aegis-subtext">UTXOs Ready To Sweep</p>
+                <p className="text-[10px] text-aegis-muted mt-1">
+                  Preview of the individual stealth UTXOs that will be aggregated into the final sweep.
+                </p>
+              </div>
+              <div className="space-y-2">
+                {claimableUtxos.map((utxo, index) => (
+                  <div
+                    key={utxo.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-aegis-border px-3 py-2"
+                  >
+                    <p className="text-xs text-aegis-subtext">
+                      {index + 1}. {formatLamportsToSol(utxo.amountLamports)} SOL from stealth address {shortenAddress(utxo.stealthAddress, 6)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-xl border border-aegis-border bg-aegis-card p-4 space-y-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-xs font-semibold text-aegis-subtext">Sweep Claimable Payments</p>
+                <p className="text-[10px] text-aegis-muted mt-1">
+                  Execute the Umbra claim, then withdraw the aggregated balance into the connected wallet.
+                </p>
+              </div>
+              <Button
+                onClick={handleSweep}
+                variant="secondary"
+                size="sm"
+                icon={ArrowRight}
+                disabled={!mvkReady || claimableUtxos.length === 0}
+              >
+                Claim & Sweep
+              </Button>
+            </div>
+
+            {claimResult && (
+              <div className="text-xs text-aegis-subtext space-y-2">
+                <p>
+                  Swept {formatLamportsToSol(claimResult.amountLamports)} SOL to {shortenAddress(claimResult.destinationAddress, 6)}
+                </p>
+                {claimResult.claimSignature && (
+                  <a
+                    href={`https://explorer.solana.com/tx/${claimResult.claimSignature}?cluster=${NETWORK}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-aegis-cyan underline mr-4"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    View claim transaction
+                  </a>
+                )}
+                <a
+                  href={`https://explorer.solana.com/tx/${claimResult.withdrawSignature}?cluster=${NETWORK}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-aegis-cyan underline"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  View withdraw transaction
+                </a>
+              </div>
+            )}
+          </div>
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
 function SendToAddress() {
   const walletContext = useWallet();
   const { balances, refetch } = useSolanaBalance();
   const toast = useToast();
+  const activeSessionRef = useRef(null);
+  const operationTokenRef = useRef(0);
 
   const [recipientLink, setRecipientLink] = useState('');
   const [amount, setAmount] = useState('');
+  const [token, setToken] = useState('SOL');
   const [resolvedPaymentLink, setResolvedPaymentLink] = useState(null);
   const [resolveError, setResolveError] = useState(null);
   const [result, setResult] = useState(null);
+  const [sendError, setSendError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
 
+  const destroyActiveSession = useCallback(() => {
+    activeSessionRef.current?.destroy?.();
+    activeSessionRef.current = null;
+  }, []);
+
+  const beginOperation = useCallback(() => {
+    destroyActiveSession();
+    operationTokenRef.current += 1;
+    return operationTokenRef.current;
+  }, [destroyActiveSession]);
+
+  const isCurrentOperation = useCallback(
+    (token) => operationTokenRef.current === token,
+    []
+  );
+
+  useEffect(() => () => {
+    operationTokenRef.current += 1;
+    destroyActiveSession();
+  }, [destroyActiveSession]);
+
   const fees = amount && !isNaN(parseFloat(amount)) && parseFloat(amount) > 0
-    ? getNativePaymentFees(parseFloat(amount))
+    ? getPaymentFees(parseFloat(amount), token)
     : null;
+  const hasSufficientTokenBalance = !fees || balances[token] >= fees.total;
+  const hasSufficientSolBalance = !fees || (token === 'SOL'
+    ? balances.SOL >= fees.walletRequired
+    : balances.SOL >= fees.networkSetupFee);
+  const hasSufficientBalance = hasSufficientTokenBalance && hasSufficientSolBalance;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1205,6 +2275,7 @@ function SendToAddress() {
 
   const handleResolve = useCallback(async () => {
     setResolveError(null);
+    setSendError(null);
     setResolvedPaymentLink(null);
     try {
       const profile = resolveSignedPaymentLink(recipientLink);
@@ -1225,15 +2296,29 @@ function SendToAddress() {
       toast.error('Enter a valid amount');
       return;
     }
-    if (parseFloat(amount) > balances.SOL) {
-      toast.error('Insufficient SOL balance');
+    if (!hasSufficientBalance) {
+      if (!hasSufficientTokenBalance) {
+        toast.error(`Insufficient ${token} balance. Estimated sender requirement is ${formatTokenAmount(fees.total, token)} ${token}.`);
+      } else {
+        toast.error(`Insufficient SOL balance for network overhead. Estimated SOL required is ${fees.networkSetupFee.toFixed(6)} SOL.`);
+      }
       return;
     }
 
     setLoading(true);
+  setSendError(null);
+    const operationToken = beginOperation();
     let session;
     try {
       session = await createNativeUmbraSession(walletContext, setLoadingStep);
+      activeSessionRef.current = session;
+      const connection = new Connection(getDirectUmbraRpcEndpoint(), 'confirmed');
+      const confirmedTransactions = [];
+      const recordConfirmedTransaction = (label) => async (_transaction, signature) => {
+        confirmedTransactions.push({ label, signature });
+      };
+      const simulateSignedTransaction = (label) =>
+        createSignedTransactionDiagnosticsHook(connection, label);
 
       setLoadingStep('Preparing alias-backed Umbra receiver metadata...');
       const accountInfoProvider = await createAliasAccountInfoProvider(
@@ -1241,37 +2326,106 @@ function SendToAddress() {
         resolvedPaymentLink
       );
 
+      let aegisFeeSignature = null;
+
+      if (fees.aegisFeeLamports > 0) {
+        aegisFeeSignature = await sendPaymentLinkAegisFeeTransfer(
+          connection,
+          walletContext,
+          token,
+          fees.aegisFeeLamports,
+          setLoadingStep
+        );
+        confirmedTransactions.push({ label: 'aegis-fee-transfer', signature: aegisFeeSignature });
+      }
+
       setLoadingStep('Creating Umbra receiver-claimable UTXO from public balance...');
       const createReceiverClaimableUtxo =
         session.runtime.getPublicBalanceToReceiverClaimableUtxoCreatorFunction(
           { client: session.client },
           {
             zkProver: session.runtime.getCreateReceiverClaimableUtxoFromPublicBalanceProver(),
-            accountInfoProvider,
+            rpc: { accountInfoProvider },
+            hooks: {
+              closeProofAccount: {
+                pre: simulateSignedTransaction('ClosePublicUtxoProofAccount'),
+                post: recordConfirmedTransaction('close-proof-account'),
+              },
+              createProofAccount: {
+                pre: simulateSignedTransaction('CreatePublicUtxoProofAccount'),
+                post: recordConfirmedTransaction('create-proof-account'),
+              },
+              createUtxo: {
+                pre: simulateSignedTransaction('CreateDepositIntoMixerTreeFromPublicBalance'),
+                post: recordConfirmedTransaction('create-utxo'),
+              },
+            },
           }
         );
 
-      const signatures = await createReceiverClaimableUtxo({
-        destinationAddress: resolvedPaymentLink.aliasAddress,
-        mint: TOKEN_MINTS.SOL,
-        amount: BigInt(Math.round(parseFloat(amount) * LAMPORTS_PER_SOL)),
+      console.debug('[PaymentLinks] sender claimable UTXO creator configured', {
+        aliasAddress: resolvedPaymentLink.aliasAddress,
+        providerInjectedViaRpc: true,
+        sdkForwarderEnabled: true,
+        customTransactionMutationEnabled: false,
       });
 
-      const finalSignature = signatures[signatures.length - 1] ?? signatures[0];
-      setResult({ signature: finalSignature, fees });
-      toast.success('Payment sent through Umbra receiver-claimable flow', {
-        title: 'Success',
+      const signatures = await createReceiverClaimableUtxo({
+        destinationAddress: resolvedPaymentLink.aliasAddress,
+        mint: TOKEN_MINTS[token],
+        amount: BigInt(fees.grossDepositLamports),
+      });
+
+      const primaryTransaction = confirmedTransactions.find((transaction) => transaction.label === 'create-utxo');
+      const finalSignature = primaryTransaction?.signature ?? signatures[0] ?? signatures[signatures.length - 1] ?? aegisFeeSignature;
+
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+      setResult({
+        status: 'confirmed',
+        signature: finalSignature,
+        fees,
+        transactions: confirmedTransactions,
+        token,
+        amount,
+        aliasAddress: resolvedPaymentLink.aliasAddress,
+        createdAt: new Date().toISOString(),
+      });
+      toast.success('Payment confirmed and ready for recipient claim.', {
+        title: 'Confirmed',
         txSig: finalSignature,
       });
       refetch();
     } catch (err) {
-      toast.error(err.message, { title: 'Send Failed' });
+      if (!isCurrentOperation(operationToken)) {
+        return;
+      }
+      console.error('[PaymentLinks] send failed', err);
+      const formattedError = formatErrorForDisplay(err, 'Payment link send failed');
+      console.error('[PaymentLinks] send diagnostics', extractNestedErrorDiagnostics(err));
+      setSendError(formattedError);
+      setResult({
+        status: 'failed',
+        signature: null,
+        fees,
+        transactions: confirmedTransactions,
+        failureMessage: formattedError,
+        token,
+        amount,
+        aliasAddress: resolvedPaymentLink.aliasAddress,
+        createdAt: new Date().toISOString(),
+      });
+      toast.error(formattedError, { title: 'Send Failed' });
     } finally {
+      activeSessionRef.current = null;
       session?.destroy?.();
-      setLoading(false);
-      setLoadingStep('');
+      if (isCurrentOperation(operationToken)) {
+        setLoading(false);
+        setLoadingStep('');
+      }
     }
-  }, [resolvedPaymentLink, amount, fees, balances.SOL, toast, refetch, walletContext]);
+  }, [beginOperation, isCurrentOperation, resolvedPaymentLink, amount, fees, hasSufficientBalance, hasSufficientTokenBalance, toast, refetch, token, walletContext]);
 
   if (loading) {
     return (
@@ -1292,23 +2446,67 @@ function SendToAddress() {
               <CheckCheck className="w-7 h-7 text-aegis-green" />
             </div>
             <div className="text-center">
-              <h3 className="text-lg font-semibold text-aegis-text">Payment Sent!</h3>
+              <h3 className="text-lg font-semibold text-aegis-text">
+                {result.status === 'confirmed'
+                  ? 'Payment Confirmed!'
+                  : result.status === 'failed'
+                    ? 'Payment Failed'
+                    : 'Payment Complete!'}
+              </h3>
               <p className="text-sm text-aegis-muted mt-1">
-                Funds were routed through Umbra&apos;s receiver-claimable path. The recipient can scan and claim when ready.
+                {result.status === 'failed'
+                  ? 'The payment did not complete successfully.'
+                  : 'Funds were routed through Umbra\'s receiver-claimable path. The recipient can scan and claim when ready.'}
               </p>
             </div>
+            {result.status === 'failed' && result.failureMessage && (
+              <div className="max-w-xl rounded-xl border border-aegis-amber/30 bg-aegis-amber/5 px-3 py-2 text-xs text-aegis-amber text-left">
+                {result.failureMessage}
+              </div>
+            )}
             <div className="text-xs font-mono text-aegis-muted">
-              Estimated net claimable: {result.fees.netDeposit.toFixed(6)} SOL
+              Estimated net claimable: {formatTokenAmount(result.fees.netDeposit, result.token)} {result.token}
             </div>
-            <a
-              href={`https://explorer.solana.com/tx/${result.signature}?cluster=${NETWORK}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-aegis-cyan underline"
-            >
-              <ExternalLink className="w-4 h-4" />
-              View on Explorer
-            </a>
+            <div className="w-full max-w-xl rounded-xl border border-aegis-border bg-aegis-card px-4 py-4 text-left space-y-2">
+              <p className="text-xs text-aegis-muted">Date & Time</p>
+              <p className="text-sm text-aegis-text">{new Date(result.createdAt).toLocaleString()}</p>
+              <p className="text-xs text-aegis-muted pt-2">Amount & Token</p>
+              <p className="text-sm text-aegis-text">{formatTokenAmount(result.amount, result.token)} {result.token}</p>
+              <p className="text-xs text-aegis-muted pt-2">Destination Alias</p>
+              <p className="text-sm font-mono text-aegis-text">{result.aliasAddress}</p>
+              <p className="text-xs text-aegis-muted pt-2">Transaction Signature</p>
+              <p className="text-sm font-mono text-aegis-text break-all">{result.signature ?? 'Unavailable'}</p>
+              <p className="text-xs text-aegis-cyan pt-2">Verified Private Payment via Aegis Shield</p>
+            </div>
+            <div className="space-y-2 text-sm flex flex-col items-center">
+              {result.signature && (
+                <a
+                  href={`https://explorer.solana.com/tx/${result.signature}?cluster=${NETWORK}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-sm text-aegis-cyan underline"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  View Transaction on Explorer
+                </a>
+              )}
+              {result.signature && (
+                <Button
+                  onClick={() => downloadPaymentReceipt({
+                    timestamp: new Date(result.createdAt).toLocaleString(),
+                    amount: formatTokenAmount(result.amount, result.token),
+                    tokenSymbol: result.token,
+                    aliasAddress: result.aliasAddress,
+                    signature: result.signature,
+                    network: NETWORK,
+                  })}
+                  variant="secondary"
+                  icon={Download}
+                >
+                  Download Receipt
+                </Button>
+              )}
+            </div>
             <Button onClick={() => setResult(null)} variant="secondary">
               Send Another
             </Button>
@@ -1376,30 +2574,71 @@ function SendToAddress() {
           )}
         </div>
 
+        {sendError && (
+          <div className="rounded-xl border border-aegis-red/20 bg-aegis-red/5 px-3 py-3 text-xs text-aegis-red whitespace-pre-wrap break-words">
+            {sendError}
+          </div>
+        )}
+
         <div>
-          <label className="form-label">Amount (SOL)</label>
-          <input
-            type="number"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            placeholder="0.00"
-            min="0"
-            step="any"
-            className="input mt-1 w-full"
-          />
+          <label className="form-label">Amount</label>
+          <div className="mt-1 flex gap-2">
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00"
+              min="0"
+              step="any"
+              className="input w-full"
+            />
+            <TokenSelector value={token} onChange={setToken} disabled={loading} />
+          </div>
           <p className="mt-1 text-xs text-aegis-muted">
-            Balance: {balances.SOL.toFixed(6)} SOL
+            Balance: {formatTokenAmount(balances[token], token)} {token}
           </p>
+          {fees && (
+            <p className="mt-1 text-xs text-aegis-muted">
+              {token === 'SOL'
+                ? `Estimated wallet required right now: ${fees.walletRequired.toFixed(6)} SOL`
+                : `Estimated SOL network overhead right now: ${fees.networkSetupFee.toFixed(6)} SOL`}
+              <span className="text-aegis-muted/70"> (exact recipient amount + protocol fees + ZK setup overhead)</span>
+            </p>
+          )}
+          {fees && !hasSufficientTokenBalance && (
+            <p className="mt-1 text-xs text-aegis-red flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Wallet balance is below the estimated {token} amount required to send this payment.
+            </p>
+          )}
+          {fees && hasSufficientTokenBalance && !hasSufficientSolBalance && (
+            <p className="mt-1 text-xs text-aegis-red flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Wallet balance is below the estimated SOL overhead required to send this payment.
+            </p>
+          )}
         </div>
 
-        {fees && <FeeBreakdown fees={fees} tokenSymbol="SOL" />}
+        {fees && (
+          <FeeBreakdown
+            fees={fees}
+            tokenSymbol={token}
+            showFull
+            networkSetupFee={token === 'SOL' ? fees.networkSetupFee : 0}
+          />
+        )}
+        {fees && token !== 'SOL' && (
+          <div className="rounded-xl border border-aegis-border/60 bg-aegis-card/50 px-4 py-3 text-xs text-aegis-muted">
+            In addition to the {token} amount above, this flow still requires about {fees.networkSetupFee.toFixed(6)} SOL for transaction fees, proof-account rent, and sender setup overhead.
+          </div>
+        )}
       </CardBody>
 
       <CardFooter>
         <Button
           onClick={handleSend}
           loading={loading}
-          disabled={!resolvedPaymentLink || !amount || !fees}
+          disabled={!resolvedPaymentLink || !amount || !fees || !hasSufficientBalance}
           size="lg"
           className="w-full"
           icon={Send}
@@ -1407,7 +2646,7 @@ function SendToAddress() {
           Send Privately
           {fees && (
             <span className="ml-1 text-aegis-cyan/60">
-              — {fees.total.toFixed(4)} SOL
+              — {formatTokenAmount(fees.total, token)} {token}
             </span>
           )}
         </Button>

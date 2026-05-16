@@ -18,6 +18,21 @@ const PUBLIC_SOLANA_WS_ENDPOINTS = {
   devnet: 'wss://api.devnet.solana.com',
 };
 
+const PREMIUM_SOLANA_RPC_ENDPOINTS = {
+  helius: {
+    'mainnet-beta': import.meta.env.VITE_HELIUS_MAINNET_RPC,
+    devnet: import.meta.env.VITE_HELIUS_DEVNET_RPC,
+  },
+  quicknode: {
+    'mainnet-beta': import.meta.env.VITE_QUICKNODE_MAINNET_RPC,
+    devnet: import.meta.env.VITE_QUICKNODE_DEVNET_RPC,
+  },
+  blocksprint: {
+    'mainnet-beta': import.meta.env.VITE_BLOCKSPRINT_MAINNET_RPC,
+    devnet: import.meta.env.VITE_BLOCKSPRINT_DEVNET_RPC,
+  },
+};
+
 // ─── Solana Network ──────────────────────────────────────────────────────────
 export const NETWORK =
   import.meta.env.VITE_SOLANA_NETWORK === 'mainnet-beta'
@@ -26,7 +41,60 @@ export const NETWORK =
 
 export const SOLANA_COMMITMENT = import.meta.env.VITE_SOLANA_COMMITMENT || 'confirmed';
 
+function normalizePreferredRpcProvider(provider) {
+  const normalized = String(provider || '').trim().toLowerCase();
+  if (!normalized || normalized === 'solana-public') {
+    return null;
+  }
+
+  return normalized;
+}
+
+function toWebSocketEndpoint(endpoint) {
+  if (!endpoint) {
+    return '';
+  }
+
+  if (endpoint.startsWith('wss://') || endpoint.startsWith('ws://')) {
+    return endpoint;
+  }
+
+  if (endpoint.startsWith('https://')) {
+    return `wss://${endpoint.slice('https://'.length)}`;
+  }
+
+  if (endpoint.startsWith('http://')) {
+    return `ws://${endpoint.slice('http://'.length)}`;
+  }
+
+  return endpoint;
+}
+
+function getPreferredRpcProviderEndpoint(transport) {
+  const preferredProvider = normalizePreferredRpcProvider(import.meta.env.VITE_PREFERRED_RPC_PROVIDER);
+  if (!preferredProvider) {
+    return '';
+  }
+
+  const providerEndpoints = PREMIUM_SOLANA_RPC_ENDPOINTS[preferredProvider];
+  if (!providerEndpoints) {
+    return '';
+  }
+
+  const endpoint = providerEndpoints[NETWORK] || '';
+  if (!endpoint) {
+    return '';
+  }
+
+  return transport === 'ws' ? toWebSocketEndpoint(endpoint) : endpoint;
+}
+
 export function getRpcEndpoint() {
+  const preferredProviderEndpoint = getPreferredRpcProviderEndpoint('rpc');
+  if (preferredProviderEndpoint) {
+    return preferredProviderEndpoint;
+  }
+
   const envRpcEndpoint =
     NETWORK === 'mainnet-beta'
       ? import.meta.env.VITE_SOLANA_RPC_MAINNET
@@ -46,6 +114,11 @@ export function getRpcEndpoint() {
 }
 
 export function getWsEndpoint() {
+  const preferredProviderEndpoint = getPreferredRpcProviderEndpoint('ws');
+  if (preferredProviderEndpoint) {
+    return preferredProviderEndpoint;
+  }
+
   const envWsEndpoint =
     NETWORK === 'mainnet-beta'
       ? import.meta.env.VITE_SOLANA_WS_MAINNET
@@ -66,9 +139,13 @@ export function getWsEndpoint() {
 // Source: https://docs.umbraprivacy.com/docs/introduction
 export const UMBRA_CONFIG = {
   // Devnet indexer — Umbra's official indexer for UTXO discovery
-  indexerUrl: 'https://api-devnet.umbraprivacy.com',
+  indexerUrl:
+    import.meta.env.VITE_UMBRA_INDEXER_URL ||
+    'https://api-devnet.umbraprivacy.com',
   // Devnet relayer — used ONLY by receiver for gasless withdrawals
-  relayerUrl: 'https://relayer-devnet.umbraprivacy.com',
+  relayerUrl:
+    import.meta.env.VITE_UMBRA_RELAYER_URL ||
+    'https://relayer-devnet.umbraprivacy.com',
   // Program IDs on devnet (from official Umbra Solana deployment)
   programId: 'DSuKkyqGVGgo4QtPABfxKJKygUDACbUhirnuv63mEpAJ',
   // Umbra base fee in BPS (from SDK: BPS_DIVISOR = 16384 → 0.3% default)

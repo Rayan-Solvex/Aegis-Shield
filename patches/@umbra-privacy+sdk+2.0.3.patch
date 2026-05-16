@@ -1,3 +1,191 @@
+diff --git a/node_modules/@umbra-privacy/sdk/dist/chunk-4RHXVBNI.js b/node_modules/@umbra-privacy/sdk/dist/chunk-4RHXVBNI.js
+index 8e75cbb..b92f2bf 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/chunk-4RHXVBNI.js
++++ b/node_modules/@umbra-privacy/sdk/dist/chunk-4RHXVBNI.js
+@@ -31,6 +31,16 @@ var RelayerError = class _RelayerError extends Error {
+     }
+   }
+ };
++function stringifyRequestBody(body) {
++  return JSON.stringify(body, (_key, value) => {
++    if (typeof value !== "bigint") {
++      return value;
++    }
++    const numericValue = Number(value);
++    return Number.isSafeInteger(numericValue) ? numericValue : value.toString();
++  });
++}
++__name(stringifyRequestBody, "stringifyRequestBody");
+ async function makeRequest(endpoint, fetchImpl, options) {
+   const { method = "GET", body, operation } = options;
+   try {
+@@ -42,7 +52,7 @@ async function makeRequest(endpoint, fetchImpl, options) {
+       }
+     };
+     if (body !== void 0) {
+-      requestInit.body = JSON.stringify(body);
++      requestInit.body = stringifyRequestBody(body);
+     }
+     const response = await fetchImpl(endpoint, requestInit);
+     const data = await response.json();
+diff --git a/node_modules/@umbra-privacy/sdk/dist/chunk-AXD7LXYY.cjs b/node_modules/@umbra-privacy/sdk/dist/chunk-AXD7LXYY.cjs
+index 44bfa58..514f28a 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/chunk-AXD7LXYY.cjs
++++ b/node_modules/@umbra-privacy/sdk/dist/chunk-AXD7LXYY.cjs
+@@ -6,6 +6,26 @@ var chunkPK6SKIKE_cjs = require('./chunk-PK6SKIKE.cjs');
+ var kit = require('@solana/kit');
+ var walletStandardFeatures = require('@solana/wallet-standard-features');
+ 
++function encodeWireTransactionToBase64(bytes) {
++  return Buffer.from(bytes).toString("base64");
++}
++chunkPK6SKIKE_cjs.__name(encodeWireTransactionToBase64, "encodeWireTransactionToBase64");
++
++function getPreservedWireTransaction(transaction) {
++  return typeof transaction?.__umbraSignedWireTransactionBase64 === "string" ? transaction.__umbraSignedWireTransactionBase64 : kit.getBase64EncodedWireTransaction(transaction);
++}
++chunkPK6SKIKE_cjs.__name(getPreservedWireTransaction, "getPreservedWireTransaction");
++function mergeSignedTransactionMetadata(transaction, decoded, signedWireTransaction) {
++  return {
++    ...transaction,
++    ...decoded,
++    messageBytes: decoded.messageBytes,
++    signatures: decoded.signatures,
++    __umbraSignedWireTransactionBase64: encodeWireTransactionToBase64(signedWireTransaction)
++  };
++}
++chunkPK6SKIKE_cjs.__name(mergeSignedTransactionMetadata, "mergeSignedTransactionMetadata");
++
+ function getRpcAccountInfoProvider(config) {
+   const { rpcUrl } = config;
+   let rpcClient = null;
+@@ -118,10 +138,7 @@ function convertWalletStandardAccountToIUmbraSigner(wallet, account) {
+       const wireBytes = encoder.encode(transaction);
+       const [output] = await signTxFeature.signTransaction({ account, transaction: wireBytes });
+       const decoded = decoder.decode(output.signedTransaction);
+-      return {
+-        ...transaction,
+-        signatures: { ...transaction.signatures, ...decoded.signatures }
+-      };
++      return mergeSignedTransactionMetadata(transaction, decoded, output.signedTransaction);
+     },
+     async signTransactions(transactions) {
+       const inputs = transactions.map((tx) => ({
+@@ -129,12 +146,9 @@ function convertWalletStandardAccountToIUmbraSigner(wallet, account) {
+         transaction: encoder.encode(tx)
+       }));
+       const outputs = await signTxFeature.signTransaction(...inputs);
+-      return transactions.map((tx, index) => {
+-        const decoded = decoder.decode(outputs[index].signedTransaction);
+-        return {
+-          ...tx,
+-          signatures: { ...tx.signatures, ...decoded.signatures }
+-        };
++      return outputs.map((output, index) => {
++        const decoded = decoder.decode(output.signedTransaction);
++        return mergeSignedTransactionMetadata(transactions[index], decoded, output.signedTransaction);
+       });
+     },
+     async signMessage(message) {
+@@ -237,7 +251,7 @@ function getWebsocketTransactionForwarder(config, deps) {
+       return Promise.all(signaturePromises);
+     }, "forwardInParallel"),
+     fireAndForget: /* @__PURE__ */ chunkPK6SKIKE_cjs.__name(async (transaction) => {
+-      const wireTransaction = kit.getBase64EncodedWireTransaction(transaction);
++      const wireTransaction = getPreservedWireTransaction(transaction);
+       const response = await rpc.sendTransaction(wireTransaction, {
+         encoding: "base64",
+         skipPreflight: true
+@@ -252,7 +266,7 @@ function getPollingTransactionForwarder(config, deps) {
+   const { createRpc = kit.createSolanaRpc } = deps ?? {};
+   const rpc = createRpc(rpcUrl);
+   async function sendTransactionOnly(transaction, commitment) {
+-    const wireTransaction = kit.getBase64EncodedWireTransaction(transaction);
++    const wireTransaction = getPreservedWireTransaction(transaction);
+     const response = await rpc.sendTransaction(wireTransaction, {
+       encoding: "base64",
+       preflightCommitment: commitment
+diff --git a/node_modules/@umbra-privacy/sdk/dist/chunk-HA5FLM63.js b/node_modules/@umbra-privacy/sdk/dist/chunk-HA5FLM63.js
+index 89c5b93..e22204b 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/chunk-HA5FLM63.js
++++ b/node_modules/@umbra-privacy/sdk/dist/chunk-HA5FLM63.js
+@@ -4,6 +4,30 @@ import { __name } from './chunk-7QVYU63E.js';
+ import { fetchEncodedAccounts, createSolanaRpc, signBytes, getTransactionEncoder, getTransactionDecoder, generateKeyPairSigner, createKeyPairSignerFromBytes, sendAndConfirmTransactionFactory, createSolanaRpcSubscriptions, getBase64EncodedWireTransaction, getSignatureFromTransaction, signature } from '@solana/kit';
+ import { SolanaSignTransaction, SolanaSignMessage } from '@solana/wallet-standard-features';
+ 
++function encodeWireTransactionToBase64(bytes) {
++  let binary = "";
++  for (const byte of bytes) {
++    binary += String.fromCharCode(byte);
++  }
++  return btoa(binary);
++}
++__name(encodeWireTransactionToBase64, "encodeWireTransactionToBase64");
++
++function getPreservedWireTransaction(transaction) {
++  return typeof transaction?.__umbraSignedWireTransactionBase64 === "string" ? transaction.__umbraSignedWireTransactionBase64 : getBase64EncodedWireTransaction(transaction);
++}
++__name(getPreservedWireTransaction, "getPreservedWireTransaction");
++function mergeSignedTransactionMetadata(transaction, decoded, signedWireTransaction) {
++  return {
++    ...transaction,
++    ...decoded,
++    messageBytes: decoded.messageBytes,
++    signatures: decoded.signatures,
++    __umbraSignedWireTransactionBase64: encodeWireTransactionToBase64(signedWireTransaction)
++  };
++}
++__name(mergeSignedTransactionMetadata, "mergeSignedTransactionMetadata");
++
+ function getRpcAccountInfoProvider(config) {
+   const { rpcUrl } = config;
+   let rpcClient = null;
+@@ -116,10 +140,7 @@ function convertWalletStandardAccountToIUmbraSigner(wallet, account) {
+       const wireBytes = encoder.encode(transaction);
+       const [output] = await signTxFeature.signTransaction({ account, transaction: wireBytes });
+       const decoded = decoder.decode(output.signedTransaction);
+-      return {
+-        ...transaction,
+-        signatures: { ...transaction.signatures, ...decoded.signatures }
+-      };
++      return mergeSignedTransactionMetadata(transaction, decoded, output.signedTransaction);
+     },
+     async signTransactions(transactions) {
+       const inputs = transactions.map((tx) => ({
+@@ -127,12 +148,9 @@ function convertWalletStandardAccountToIUmbraSigner(wallet, account) {
+         transaction: encoder.encode(tx)
+       }));
+       const outputs = await signTxFeature.signTransaction(...inputs);
+-      return transactions.map((tx, index) => {
+-        const decoded = decoder.decode(outputs[index].signedTransaction);
+-        return {
+-          ...tx,
+-          signatures: { ...tx.signatures, ...decoded.signatures }
+-        };
++      return outputs.map((output, index) => {
++        const decoded = decoder.decode(output.signedTransaction);
++        return mergeSignedTransactionMetadata(transactions[index], decoded, output.signedTransaction);
+       });
+     },
+     async signMessage(message) {
+@@ -235,7 +253,7 @@ function getWebsocketTransactionForwarder(config, deps) {
+       return Promise.all(signaturePromises);
+     }, "forwardInParallel"),
+     fireAndForget: /* @__PURE__ */ __name(async (transaction) => {
+-      const wireTransaction = getBase64EncodedWireTransaction(transaction);
++      const wireTransaction = getPreservedWireTransaction(transaction);
+       const response = await rpc.sendTransaction(wireTransaction, {
+         encoding: "base64",
+         skipPreflight: true
+@@ -250,7 +268,7 @@ function getPollingTransactionForwarder(config, deps) {
+   const { createRpc = createSolanaRpc } = deps ?? {};
+   const rpc = createRpc(rpcUrl);
+   async function sendTransactionOnly(transaction, commitment) {
+-    const wireTransaction = getBase64EncodedWireTransaction(transaction);
++    const wireTransaction = getPreservedWireTransaction(transaction);
+     const response = await rpc.sendTransaction(wireTransaction, {
+       encoding: "base64",
+       preflightCommitment: commitment
 diff --git a/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js b/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js
 index 0e1e01e..96bfd90 100644
 --- a/node_modules/@umbra-privacy/sdk/dist/chunk-INJ73LXQ.js
@@ -50,3 +238,553 @@ index 0e1e01e..96bfd90 100644
    localnet: null
  };
  function getNetworkConfig(network) {
+diff --git a/node_modules/@umbra-privacy/sdk/dist/chunk-NKVMSABR.cjs b/node_modules/@umbra-privacy/sdk/dist/chunk-NKVMSABR.cjs
+index 20bec66..3ae8500 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/chunk-NKVMSABR.cjs
++++ b/node_modules/@umbra-privacy/sdk/dist/chunk-NKVMSABR.cjs
+@@ -33,6 +33,16 @@ var RelayerError = class _RelayerError extends Error {
+     }
+   }
+ };
++function stringifyRequestBody(body) {
++  return JSON.stringify(body, (_key, value) => {
++    if (typeof value !== "bigint") {
++      return value;
++    }
++    const numericValue = Number(value);
++    return Number.isSafeInteger(numericValue) ? numericValue : value.toString();
++  });
++}
++chunkPK6SKIKE_cjs.__name(stringifyRequestBody, "stringifyRequestBody");
+ async function makeRequest(endpoint, fetchImpl, options) {
+   const { method = "GET", body, operation } = options;
+   try {
+@@ -44,7 +54,7 @@ async function makeRequest(endpoint, fetchImpl, options) {
+       }
+     };
+     if (body !== void 0) {
+-      requestInit.body = JSON.stringify(body);
++      requestInit.body = stringifyRequestBody(body);
+     }
+     const response = await fetchImpl(endpoint, requestInit);
+     const data = await response.json();
+diff --git a/node_modules/@umbra-privacy/sdk/dist/index.cjs b/node_modules/@umbra-privacy/sdk/dist/index.cjs
+index eb3f6c2..5f0efd8 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/index.cjs
++++ b/node_modules/@umbra-privacy/sdk/dist/index.cjs
+@@ -86,7 +86,6 @@ function notificationValueToEncodedAccount(address, value) {
+     executable: value.executable,
+     lamports: value.lamports,
+     programAddress: value.owner,
+-    space: BigInt(data.length),
+     exists: true
+   };
+ }
+@@ -99,7 +98,7 @@ function checkAborted(signal) {
+ chunkPK6SKIKE_cjs.__name(checkAborted, "checkAborted");
+ async function fetchCurrentSlot(rpc, commitment) {
+   const slot = await rpc.getSlot({ commitment }).send();
+-  return slot;
++  return BigInt(slot);
+ }
+ chunkPK6SKIKE_cjs.__name(fetchCurrentSlot, "fetchCurrentSlot");
+ function isSlotWindowExceeded(queuedSlot, currentSlot, maxSlotWindow) {
+@@ -6461,17 +6460,6 @@ function getEncryptedBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+         );
+         currentTimestamp = Math.floor(dateFromComponents.getTime() / 1e3);
+       }
+-      const { year, month, day, hour, minute, second } = timestampComponents;
+-      const transactionViewingKey = await secondViewingKeyGenerator(
+-        mint,
+-        year,
+-        month,
+-        day,
+-        hour,
+-        minute,
+-        second
+-      );
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(transactionViewingKey);
+       const { low: destinationAddressLow, high: destinationAddressHigh } = chunkZY3TSHMJ_cjs.splitAddressToLowHigh(destinationAddress);
+       const senderMasterViewingKey = await masterViewingKeyGenerator();
+       chunkLTCKPTZC_cjs.assertBn254FieldElement(senderMasterViewingKey);
+@@ -8411,36 +8399,6 @@ function getPublicBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+       chunkLTCKPTZC_cjs.assertU64(netDepositAmount);
+       let currentTimestamp;
+       let timestampComponents;
+-      if (deps.random?.getUtcNow === void 0) {
+-        const now = /* @__PURE__ */ new Date();
+-        currentTimestamp = Math.floor(now.getTime() / 1e3);
+-        timestampComponents = chunkZY3TSHMJ_cjs.extractUtcComponents(now);
+-      } else {
+-        timestampComponents = deps.random.getUtcNow();
+-        const { year: year2, month: month2, day: day2, hour: hour2, minute: minute2, second: second2 } = timestampComponents;
+-        const dateFromComponents = new Date(
+-          Date.UTC(
+-            Number(year2),
+-            Number(month2) - 1,
+-            Number(day2),
+-            Number(hour2),
+-            Number(minute2),
+-            Number(second2)
+-          )
+-        );
+-        currentTimestamp = Math.floor(dateFromComponents.getTime() / 1e3);
+-      }
+-      const { year, month, day, hour, minute, second } = timestampComponents;
+-      const transactionViewingKey = await secondViewingKeyGenerator(
+-        mint,
+-        year,
+-        month,
+-        day,
+-        hour,
+-        minute,
+-        second
+-      );
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(transactionViewingKey);
+       const { low: destinationAddressLow, high: destinationAddressHigh } = chunkZY3TSHMJ_cjs.splitAddressToLowHigh(destinationAddress);
+       const senderMasterViewingKey = await masterViewingKeyGenerator();
+       chunkLTCKPTZC_cjs.assertBn254FieldElement(senderMasterViewingKey);
+@@ -8486,6 +8444,36 @@ function getPublicBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+         h2BlindingFactor: randomSecret
+       });
+       chunkLTCKPTZC_cjs.assertBn254FieldElement(h2Hash);
++      if (deps.random?.getUtcNow === void 0) {
++        const now = /* @__PURE__ */ new Date();
++        currentTimestamp = Math.floor(now.getTime() / 1e3);
++        timestampComponents = chunkZY3TSHMJ_cjs.extractUtcComponents(now);
++      } else {
++        timestampComponents = deps.random.getUtcNow();
++        const { year: year2, month: month2, day: day2, hour: hour2, minute: minute2, second: second2 } = timestampComponents;
++        const dateFromComponents = new Date(
++          Date.UTC(
++            Number(year2),
++            Number(month2) - 1,
++            Number(day2),
++            Number(hour2),
++            Number(minute2),
++            Number(second2)
++          )
++        );
++        currentTimestamp = Math.floor(dateFromComponents.getTime() / 1e3);
++      }
++      const { year, month, day, hour, minute, second } = timestampComponents;
++      const transactionViewingKey = await secondViewingKeyGenerator(
++        mint,
++        year,
++        month,
++        day,
++        hour,
++        minute,
++        second
++      );
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(transactionViewingKey);
+       chunkLTCKPTZC_cjs.assertPoseidonPlaintext(destinationAddressLow);
+       chunkLTCKPTZC_cjs.assertPoseidonPlaintext(destinationAddressHigh);
+       const poseidonKey = BigInt(transactionViewingKey);
+@@ -8652,7 +8640,7 @@ function getPublicBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+       const keystreamCommitment1Bytes = chunk5GUSMQ74_cjs.encodeU256ToU256LeBytes(
+         toU2563(secondPcKeystreamCommitment)
+       );
+-      async function buildAndSendTransaction(instructions, instructionName, useAlt) {
++      async function buildAndSendTransaction(instructions, instructionName, useAlt, preHook) {
+         let latestBlockhashData;
+         try {
+           latestBlockhashData = await getLatestBlockhash();
+@@ -8833,6 +8821,8 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+   const accountInfoProvider = deps.rpc?.accountInfoProvider ?? client.accountInfoProvider;
+   const getLatestBlockhash = deps.rpc?.blockhashProvider ?? client.blockhashProvider;
+   const transactionForwarder = deps.rpc?.transactionForwarder ?? client.transactionForwarder;
++  const factoryCloseProofAccountCallbacks = deps.hooks?.closeProofAccount;
++  const factoryCreateProofAccountCallbacks = deps.hooks?.createProofAccount;
+   const factoryCreateUtxoCallbacks = deps.hooks?.createUtxo;
+   const getEpochInfo = deps.rpc?.epochInfo ?? client.epochInfoProvider;
+   const masterViewingKeyGenerator = deps.keys?.masterViewingKeyGenerator ?? chunk3LS5P32X_cjs.getMasterViewingKeyDeriver({ client });
+@@ -8955,6 +8945,35 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+       chunkLTCKPTZC_cjs.assertU64(netDepositAmount);
+       let currentTimestamp;
+       let timestampComponents;
++      const { low: destinationAddressLow, high: destinationAddressHigh } = chunkZY3TSHMJ_cjs.splitAddressToLowHigh(destinationAddress);
++      const senderMasterViewingKey = await masterViewingKeyGenerator();
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderMasterViewingKey);
++      const senderMvkBlindingFactor = await masterViewingKeyBlindingFactorGenerator();
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderMvkBlindingFactor);
++      const senderPrivateKey = await poseidonPrivateKeyGenerator();
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderPrivateKey);
++      const senderPrivateKeyBlindingFactor = await poseidonBlindingFactorGenerator();
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderPrivateKeyBlindingFactor);
++      const senderUserCommitment = await userCommitmentGenerator(
++        senderMasterViewingKey,
++        senderMvkBlindingFactor,
++        senderPrivateKey,
++        senderPrivateKeyBlindingFactor
++      );
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderUserCommitment);
++      const randomSecret = chunk3LS5P32X_cjs.deriveRandomSecretFromModifiedGenerationIndex(modifiedGenerationIndex);
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(randomSecret);
++      const nullifier = chunk3LS5P32X_cjs.deriveNullifierFromModifiedGenerationIndex(modifiedGenerationIndex);
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(nullifier);
++      const h2Hash = await h2Generator.generateH2({
++        amount: toBn254FieldElement4(netDepositAmount),
++        nullifier,
++        userCommitment: receiverUserCommitment,
++        finalDestinationAddressLow: toBn254FieldElement4(destinationAddressLow),
++        finalDestinationAddressHigh: toBn254FieldElement4(destinationAddressHigh),
++        h2BlindingFactor: randomSecret
++      });
++      chunkLTCKPTZC_cjs.assertBn254FieldElement(h2Hash);
+       if (deps.random?.getUtcNow === void 0) {
+         const now = /* @__PURE__ */ new Date();
+         currentTimestamp = Math.floor(now.getTime() / 1e3);
+@@ -8985,35 +9004,6 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+         second
+       );
+       chunkLTCKPTZC_cjs.assertBn254FieldElement(transactionViewingKey);
+-      const { low: destinationAddressLow, high: destinationAddressHigh } = chunkZY3TSHMJ_cjs.splitAddressToLowHigh(destinationAddress);
+-      const senderMasterViewingKey = await masterViewingKeyGenerator();
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderMasterViewingKey);
+-      const senderMvkBlindingFactor = await masterViewingKeyBlindingFactorGenerator();
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderMvkBlindingFactor);
+-      const senderPrivateKey = await poseidonPrivateKeyGenerator();
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderPrivateKey);
+-      const senderPrivateKeyBlindingFactor = await poseidonBlindingFactorGenerator();
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderPrivateKeyBlindingFactor);
+-      const senderUserCommitment = await userCommitmentGenerator(
+-        senderMasterViewingKey,
+-        senderMvkBlindingFactor,
+-        senderPrivateKey,
+-        senderPrivateKeyBlindingFactor
+-      );
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(senderUserCommitment);
+-      const randomSecret = chunk3LS5P32X_cjs.deriveRandomSecretFromModifiedGenerationIndex(modifiedGenerationIndex);
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(randomSecret);
+-      const nullifier = chunk3LS5P32X_cjs.deriveNullifierFromModifiedGenerationIndex(modifiedGenerationIndex);
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(nullifier);
+-      const h2Hash = await h2Generator.generateH2({
+-        amount: toBn254FieldElement4(netDepositAmount),
+-        nullifier,
+-        userCommitment: receiverUserCommitment,
+-        finalDestinationAddressLow: toBn254FieldElement4(destinationAddressLow),
+-        finalDestinationAddressHigh: toBn254FieldElement4(destinationAddressHigh),
+-        h2BlindingFactor: randomSecret
+-      });
+-      chunkLTCKPTZC_cjs.assertBn254FieldElement(h2Hash);
+       chunkLTCKPTZC_cjs.assertPoseidonPlaintext(destinationAddressLow);
+       chunkLTCKPTZC_cjs.assertPoseidonPlaintext(destinationAddressHigh);
+       const poseidonKey = BigInt(transactionViewingKey);
+@@ -9182,7 +9172,7 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+       const keystreamCommitment1Bytes = chunk5GUSMQ74_cjs.encodeU256ToU256LeBytes(
+         toU2564(secondPcKeystreamCommitment)
+       );
+-      async function buildAndSendTransaction(instructions, instructionName, useAlt) {
++      async function buildAndSendTransaction(instructions, instructionName, useAlt, preHook) {
+         let latestBlockhashData;
+         try {
+           latestBlockhashData = await getLatestBlockhash();
+@@ -9214,6 +9204,9 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+             `${instructionName}: Transaction was not properly signed`
+           );
+         }
++        if (preHook !== void 0) {
++          await preHook(signed);
++        }
+         const signature = kit.getSignatureFromTransaction(signed);
+         try {
+           await transactionForwarder.forwardSequentially([signed]);
+@@ -9250,7 +9243,9 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+         );
+         const closeResult = await buildAndSendTransaction(
+           [closeInstruction],
+-          "ClosePublicUtxoProofAccount"
++          "ClosePublicUtxoProofAccount",
++          void 0,
++          factoryCloseProofAccountCallbacks?.pre
+         );
+         closeProofAccountSignature = closeResult.signature;
+       }
+@@ -9275,7 +9270,9 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+       );
+       const proofAccountResult = await buildAndSendTransaction(
+         [proofAccountInstruction],
+-        "CreatePublicUtxoProofAccount"
++        "CreatePublicUtxoProofAccount",
++        void 0,
++        factoryCreateProofAccountCallbacks?.pre
+       );
+       const depositInstruction = await umbraCodama.getDepositIntoStealthPoolFromPublicBalanceInstructionAsync(
+         {
+@@ -9292,13 +9289,11 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+         { programAddress: client.networkConfig.programId }
+       );
+       const computeBudgetInstruction = chunkZQOIYCGA_cjs.createSetComputeUnitLimitInstruction(12e5);
+-      if (factoryCreateUtxoCallbacks?.pre !== void 0) {
+-        await factoryCreateUtxoCallbacks.pre(proofAccountResult.signedTransaction);
+-      }
+       const depositResult = await buildAndSendTransaction(
+         [computeBudgetInstruction, depositInstruction],
+         "CreateDepositIntoMixerTreeFromPublicBalance",
+-        true
++        true,
++        factoryCreateUtxoCallbacks?.pre
+       );
+       if (factoryCreateUtxoCallbacks?.post !== void 0) {
+         await factoryCreateUtxoCallbacks.post(
+diff --git a/node_modules/@umbra-privacy/sdk/dist/index.js b/node_modules/@umbra-privacy/sdk/dist/index.js
+index 2b765eb..333e6c6 100644
+--- a/node_modules/@umbra-privacy/sdk/dist/index.js
++++ b/node_modules/@umbra-privacy/sdk/dist/index.js
+@@ -89,7 +89,6 @@ function notificationValueToEncodedAccount(address, value) {
+     executable: value.executable,
+     lamports: value.lamports,
+     programAddress: value.owner,
+-    space: BigInt(data.length),
+     exists: true
+   };
+ }
+@@ -102,7 +101,7 @@ function checkAborted(signal) {
+ __name(checkAborted, "checkAborted");
+ async function fetchCurrentSlot(rpc, commitment) {
+   const slot = await rpc.getSlot({ commitment }).send();
+-  return slot;
++  return BigInt(slot);
+ }
+ __name(fetchCurrentSlot, "fetchCurrentSlot");
+ function isSlotWindowExceeded(queuedSlot, currentSlot, maxSlotWindow) {
+@@ -6464,17 +6463,6 @@ function getEncryptedBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+         );
+         currentTimestamp = Math.floor(dateFromComponents.getTime() / 1e3);
+       }
+-      const { year, month, day, hour, minute, second } = timestampComponents;
+-      const transactionViewingKey = await secondViewingKeyGenerator(
+-        mint,
+-        year,
+-        month,
+-        day,
+-        hour,
+-        minute,
+-        second
+-      );
+-      assertBn254FieldElement(transactionViewingKey);
+       const { low: destinationAddressLow, high: destinationAddressHigh } = splitAddressToLowHigh(destinationAddress);
+       const senderMasterViewingKey = await masterViewingKeyGenerator();
+       assertBn254FieldElement(senderMasterViewingKey);
+@@ -8414,36 +8402,6 @@ function getPublicBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+       assertU64(netDepositAmount);
+       let currentTimestamp;
+       let timestampComponents;
+-      if (deps.random?.getUtcNow === void 0) {
+-        const now = /* @__PURE__ */ new Date();
+-        currentTimestamp = Math.floor(now.getTime() / 1e3);
+-        timestampComponents = extractUtcComponents(now);
+-      } else {
+-        timestampComponents = deps.random.getUtcNow();
+-        const { year: year2, month: month2, day: day2, hour: hour2, minute: minute2, second: second2 } = timestampComponents;
+-        const dateFromComponents = new Date(
+-          Date.UTC(
+-            Number(year2),
+-            Number(month2) - 1,
+-            Number(day2),
+-            Number(hour2),
+-            Number(minute2),
+-            Number(second2)
+-          )
+-        );
+-        currentTimestamp = Math.floor(dateFromComponents.getTime() / 1e3);
+-      }
+-      const { year, month, day, hour, minute, second } = timestampComponents;
+-      const transactionViewingKey = await secondViewingKeyGenerator(
+-        mint,
+-        year,
+-        month,
+-        day,
+-        hour,
+-        minute,
+-        second
+-      );
+-      assertBn254FieldElement(transactionViewingKey);
+       const { low: destinationAddressLow, high: destinationAddressHigh } = splitAddressToLowHigh(destinationAddress);
+       const senderMasterViewingKey = await masterViewingKeyGenerator();
+       assertBn254FieldElement(senderMasterViewingKey);
+@@ -8489,6 +8447,36 @@ function getPublicBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+         h2BlindingFactor: randomSecret
+       });
+       assertBn254FieldElement(h2Hash);
++      if (deps.random?.getUtcNow === void 0) {
++        const now = /* @__PURE__ */ new Date();
++        currentTimestamp = Math.floor(now.getTime() / 1e3);
++        timestampComponents = extractUtcComponents(now);
++      } else {
++        timestampComponents = deps.random.getUtcNow();
++        const { year: year2, month: month2, day: day2, hour: hour2, minute: minute2, second: second2 } = timestampComponents;
++        const dateFromComponents = new Date(
++          Date.UTC(
++            Number(year2),
++            Number(month2) - 1,
++            Number(day2),
++            Number(hour2),
++            Number(minute2),
++            Number(second2)
++          )
++        );
++        currentTimestamp = Math.floor(dateFromComponents.getTime() / 1e3);
++      }
++      const { year, month, day, hour, minute, second } = timestampComponents;
++      const transactionViewingKey = await secondViewingKeyGenerator(
++        mint,
++        year,
++        month,
++        day,
++        hour,
++        minute,
++        second
++      );
++      assertBn254FieldElement(transactionViewingKey);
+       assertPoseidonPlaintext(destinationAddressLow);
+       assertPoseidonPlaintext(destinationAddressHigh);
+       const poseidonKey = BigInt(transactionViewingKey);
+@@ -8655,7 +8643,7 @@ function getPublicBalanceToSelfClaimableUtxoCreatorFunction(args, deps) {
+       const keystreamCommitment1Bytes = encodeU256ToU256LeBytes(
+         toU2563(secondPcKeystreamCommitment)
+       );
+-      async function buildAndSendTransaction(instructions, instructionName, useAlt) {
++      async function buildAndSendTransaction(instructions, instructionName, useAlt, preHook) {
+         let latestBlockhashData;
+         try {
+           latestBlockhashData = await getLatestBlockhash();
+@@ -8836,6 +8824,8 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+   const accountInfoProvider = deps.rpc?.accountInfoProvider ?? client.accountInfoProvider;
+   const getLatestBlockhash = deps.rpc?.blockhashProvider ?? client.blockhashProvider;
+   const transactionForwarder = deps.rpc?.transactionForwarder ?? client.transactionForwarder;
++  const factoryCloseProofAccountCallbacks = deps.hooks?.closeProofAccount;
++  const factoryCreateProofAccountCallbacks = deps.hooks?.createProofAccount;
+   const factoryCreateUtxoCallbacks = deps.hooks?.createUtxo;
+   const getEpochInfo = deps.rpc?.epochInfo ?? client.epochInfoProvider;
+   const masterViewingKeyGenerator = deps.keys?.masterViewingKeyGenerator ?? getMasterViewingKeyDeriver({ client });
+@@ -8958,6 +8948,35 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+       assertU64(netDepositAmount);
+       let currentTimestamp;
+       let timestampComponents;
++      const { low: destinationAddressLow, high: destinationAddressHigh } = splitAddressToLowHigh(destinationAddress);
++      const senderMasterViewingKey = await masterViewingKeyGenerator();
++      assertBn254FieldElement(senderMasterViewingKey);
++      const senderMvkBlindingFactor = await masterViewingKeyBlindingFactorGenerator();
++      assertBn254FieldElement(senderMvkBlindingFactor);
++      const senderPrivateKey = await poseidonPrivateKeyGenerator();
++      assertBn254FieldElement(senderPrivateKey);
++      const senderPrivateKeyBlindingFactor = await poseidonBlindingFactorGenerator();
++      assertBn254FieldElement(senderPrivateKeyBlindingFactor);
++      const senderUserCommitment = await userCommitmentGenerator(
++        senderMasterViewingKey,
++        senderMvkBlindingFactor,
++        senderPrivateKey,
++        senderPrivateKeyBlindingFactor
++      );
++      assertBn254FieldElement(senderUserCommitment);
++      const randomSecret = deriveRandomSecretFromModifiedGenerationIndex(modifiedGenerationIndex);
++      assertBn254FieldElement(randomSecret);
++      const nullifier = deriveNullifierFromModifiedGenerationIndex(modifiedGenerationIndex);
++      assertBn254FieldElement(nullifier);
++      const h2Hash = await h2Generator.generateH2({
++        amount: toBn254FieldElement4(netDepositAmount),
++        nullifier,
++        userCommitment: receiverUserCommitment,
++        finalDestinationAddressLow: toBn254FieldElement4(destinationAddressLow),
++        finalDestinationAddressHigh: toBn254FieldElement4(destinationAddressHigh),
++        h2BlindingFactor: randomSecret
++      });
++      assertBn254FieldElement(h2Hash);
+       if (deps.random?.getUtcNow === void 0) {
+         const now = /* @__PURE__ */ new Date();
+         currentTimestamp = Math.floor(now.getTime() / 1e3);
+@@ -8988,35 +9007,6 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+         second
+       );
+       assertBn254FieldElement(transactionViewingKey);
+-      const { low: destinationAddressLow, high: destinationAddressHigh } = splitAddressToLowHigh(destinationAddress);
+-      const senderMasterViewingKey = await masterViewingKeyGenerator();
+-      assertBn254FieldElement(senderMasterViewingKey);
+-      const senderMvkBlindingFactor = await masterViewingKeyBlindingFactorGenerator();
+-      assertBn254FieldElement(senderMvkBlindingFactor);
+-      const senderPrivateKey = await poseidonPrivateKeyGenerator();
+-      assertBn254FieldElement(senderPrivateKey);
+-      const senderPrivateKeyBlindingFactor = await poseidonBlindingFactorGenerator();
+-      assertBn254FieldElement(senderPrivateKeyBlindingFactor);
+-      const senderUserCommitment = await userCommitmentGenerator(
+-        senderMasterViewingKey,
+-        senderMvkBlindingFactor,
+-        senderPrivateKey,
+-        senderPrivateKeyBlindingFactor
+-      );
+-      assertBn254FieldElement(senderUserCommitment);
+-      const randomSecret = deriveRandomSecretFromModifiedGenerationIndex(modifiedGenerationIndex);
+-      assertBn254FieldElement(randomSecret);
+-      const nullifier = deriveNullifierFromModifiedGenerationIndex(modifiedGenerationIndex);
+-      assertBn254FieldElement(nullifier);
+-      const h2Hash = await h2Generator.generateH2({
+-        amount: toBn254FieldElement4(netDepositAmount),
+-        nullifier,
+-        userCommitment: receiverUserCommitment,
+-        finalDestinationAddressLow: toBn254FieldElement4(destinationAddressLow),
+-        finalDestinationAddressHigh: toBn254FieldElement4(destinationAddressHigh),
+-        h2BlindingFactor: randomSecret
+-      });
+-      assertBn254FieldElement(h2Hash);
+       assertPoseidonPlaintext(destinationAddressLow);
+       assertPoseidonPlaintext(destinationAddressHigh);
+       const poseidonKey = BigInt(transactionViewingKey);
+@@ -9185,7 +9175,7 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+       const keystreamCommitment1Bytes = encodeU256ToU256LeBytes(
+         toU2564(secondPcKeystreamCommitment)
+       );
+-      async function buildAndSendTransaction(instructions, instructionName, useAlt) {
++      async function buildAndSendTransaction(instructions, instructionName, useAlt, preHook) {
+         let latestBlockhashData;
+         try {
+           latestBlockhashData = await getLatestBlockhash();
+@@ -9217,6 +9207,9 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+             `${instructionName}: Transaction was not properly signed`
+           );
+         }
++        if (preHook !== void 0) {
++          await preHook(signed);
++        }
+         const signature = getSignatureFromTransaction(signed);
+         try {
+           await transactionForwarder.forwardSequentially([signed]);
+@@ -9253,7 +9246,9 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+         );
+         const closeResult = await buildAndSendTransaction(
+           [closeInstruction],
+-          "ClosePublicUtxoProofAccount"
++          "ClosePublicUtxoProofAccount",
++          void 0,
++          factoryCloseProofAccountCallbacks?.pre
+         );
+         closeProofAccountSignature = closeResult.signature;
+       }
+@@ -9278,7 +9273,9 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+       );
+       const proofAccountResult = await buildAndSendTransaction(
+         [proofAccountInstruction],
+-        "CreatePublicUtxoProofAccount"
++        "CreatePublicUtxoProofAccount",
++        void 0,
++        factoryCreateProofAccountCallbacks?.pre
+       );
+       const depositInstruction = await getDepositIntoStealthPoolFromPublicBalanceInstructionAsync(
+         {
+@@ -9295,13 +9292,11 @@ function getPublicBalanceToReceiverClaimableUtxoCreatorFunction(args, deps) {
+         { programAddress: client.networkConfig.programId }
+       );
+       const computeBudgetInstruction = createSetComputeUnitLimitInstruction(12e5);
+-      if (factoryCreateUtxoCallbacks?.pre !== void 0) {
+-        await factoryCreateUtxoCallbacks.pre(proofAccountResult.signedTransaction);
+-      }
+       const depositResult = await buildAndSendTransaction(
+         [computeBudgetInstruction, depositInstruction],
+         "CreateDepositIntoMixerTreeFromPublicBalance",
+-        true
++        true,
++        factoryCreateUtxoCallbacks?.pre
+       );
+       if (factoryCreateUtxoCallbacks?.post !== void 0) {
+         await factoryCreateUtxoCallbacks.post(

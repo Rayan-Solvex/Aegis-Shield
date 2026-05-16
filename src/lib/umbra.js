@@ -71,17 +71,47 @@ const DEVNET_UMBRA_NETWORK_CONFIG = {
     7,
   ]),
   arciumProgramAddress: 'Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ',
-  addressLookupTables: {},
+  addressLookupTables: {
+    456: {
+      register_user_for_anonymous_usage_v11: {
+        altAddress: 'EpE5tPoMBeBoy9DwhJJJZEiwLaEuuC6LdZaqt9TFxBko',
+        addresses: [
+          'Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ',
+          '9AutF4oqBAoV1AGXvtco4BJ9JUrA3q3gLMu5iSvWw1Pk',
+          'Ex7BD8o8PK1y2eXDd38Jgujj93uHygrZeWXDeGAHmHtN',
+          '4mcrgNZzJwwKrE3wXMHfepT8htSBmGqBzDYPJijWooog',
+          'DzaQCyfybroycrNqE5Gk7LhSbWD2qfCics6qptBFbr95',
+          'B7RqVEMn5Hbn9CdgLQNPUD26scLLu8Giddqfyh4fciHW',
+          'Fj4SebxLyZih7QBueizjhayu93NF5Z2a1yC85yvXG3UF',
+          '11111111111111111111111111111111',
+          'G2sRWJvi3xoyh5k2gY49eG9L8YhAEWQPtNb1zb1GXTtC',
+          '7EbMUTLo5DjdzbN7s8BXeZwXzEwNQb1hScfRvWg8a6ot',
+          'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+          'FtzF1zD1iikjuNxHXXCnSBxoMJfCDLAwrsmZwwE7APqv',
+          'EvkWUdFJDynAPKz8AM68ERYXYw1af2wRjGUHV9iEc19N',
+        ],
+      },
+    },
+  },
 };
 
 function normalizeUmbraNetwork(network) {
   return network === 'mainnet-beta' ? 'mainnet' : network;
 }
 
+function applyUmbraNetworkConfigOverride(client, network) {
+  if (normalizeUmbraNetwork(network) === 'devnet') {
+    client.networkConfig = DEVNET_UMBRA_NETWORK_CONFIG;
+  }
+
+  return client;
+}
+
 export async function getUmbraRuntime() {
   if (_umbraRuntime) return _umbraRuntime;
 
   const sdk = await import('@umbra-privacy/sdk');
+  const sdkUtils = await import('@umbra-privacy/sdk/utils');
   const prover = await import('@umbra-privacy/web-zk-prover');
 
   _umbraRuntime = {
@@ -91,7 +121,10 @@ export async function getUmbraRuntime() {
     createSignerFromPrivateKeyBytes: sdk.createSignerFromPrivateKeyBytes,
     createSignerFromWalletAccount: sdk.createSignerFromWalletAccount,
     getRpcAccountInfoProvider: sdk.getRpcAccountInfoProvider,
-    getUmbraClient: sdk.getUmbraClient,
+    getUmbraClient: async (args, deps) => {
+      const client = await sdk.getUmbraClient(args, deps);
+      return applyUmbraNetworkConfigOverride(client, args?.network);
+    },
     getUserRegistrationFunction: sdk.getUserRegistrationFunction,
     getUserAccountQuerierFunction: sdk.getUserAccountQuerierFunction,
     getPublicBalanceToSelfClaimableUtxoCreatorFunction:
@@ -109,7 +142,7 @@ export async function getUmbraRuntime() {
     getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction:
       sdk.getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction,
     getUmbraRelayer: sdk.getUmbraRelayer,
-    findEncryptedUserAccountPda: sdk.findEncryptedUserAccountPda,
+    findEncryptedUserAccountPda: sdkUtils.findEncryptedUserAccountPda,
     getUserRegistrationProver: prover.getUserRegistrationProver,
     getCreateSelfClaimableUtxoFromPublicBalanceProver:
       prover.getCreateSelfClaimableUtxoFromPublicBalanceProver,

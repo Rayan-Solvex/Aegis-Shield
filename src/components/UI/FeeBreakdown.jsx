@@ -57,7 +57,7 @@ export function FeeBreakdown({ fees, tokenSymbol, showFull = false, networkSetup
             <FeeRow
               label={`Aegis platform fee (${fees.aegisFeePercent}%)`}
               value={`−${fees.aegisFee.toFixed(6)} ${tokenSymbol}`}
-              subtext="Sent to Aegis treasury in same transaction"
+              subtext="Sent to Aegis treasury during the payment flow"
               color="text-aegis-purple"
             />
           )}
